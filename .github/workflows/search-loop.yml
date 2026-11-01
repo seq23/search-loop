@@ -133,14 +133,8 @@ jobs:
           if [ -n "$COMMIT_COMMAND" ]; then bash -c "$COMMIT_COMMAND"; exit $?; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then echo "search-loop: nothing to commit"; exit 0; fi
-          git commit -q -m "$COMMIT_MESSAGE"
-          for i in 1 2 3 4 5; do
-            git push origin HEAD:${{ github.event.repository.default_branch }} && exit 0
-            git pull --rebase origin ${{ github.event.repository.default_branch }} || { echo "NAMED STOP [PUSH_CONFLICT] rebase onto the default branch failed; the next run redoes today's work" >&2; exit 9; }
-          done
-          echo "NAMED STOP [PUSH_FAILED] five push attempts failed" >&2; exit 9
+          # Fetch + rebase onto the moved default branch and retry with jitter; the ledger merges, any other conflict is PUSH_CONFLICT.
+          node .search-loop-engine/bin/commit-push.mjs --branch "${{ github.event.repository.default_branch }}" --message "$COMMIT_MESSAGE" --ledger-dir "${{ steps.engine.outputs.ledger_dir }}" --attempts 5
       - name: Upload the weekly report
         if: always()
         uses: actions/upload-artifact@v4

@@ -120,7 +120,7 @@ Optional inputs: `setup_command` (e.g. `npm ci --ignore-scripts`), `post_build_c
 
 ## Exit codes and Rule 0
 
-`0` work done and visible · `1` problems (bad config, bad report) · `2` `NAMED STOP [NOTHING_DONE]` — nothing found, built or checked · `3` model key missing/refused with nothing else done · `9` push failed. Every run ends with a census line.
+`0` work done and visible · `1` problems (bad config, bad report) · `2` `NAMED STOP [NOTHING_DONE]` — nothing found, built or checked · `3` model key missing/refused with nothing else done · `9` push failed: `NAMED STOP [PUSH_CONFLICT]` (a real conflict outside the ledger) or `NAMED STOP [PUSH_FAILED]` (five refused pushes). The default commit step (`bin/commit-push.mjs`) fetches and rebases onto the moved default branch and retries with jitter, merging the engine's own ledger JSON by record key, so another job pushing to main meanwhile is never a failure. Every run ends with a census line.
 
 ## Develop
 
