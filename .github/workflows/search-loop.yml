@@ -52,6 +52,8 @@ on:
         required: false
       CLOUDFLARE_ACCOUNT_ID:
         required: false
+      GEMINI_API_KEY:
+        required: false
       INDEXNOW_KEY:
         required: false
     outputs:
@@ -79,6 +81,7 @@ jobs:
       # GitHub Models free tier: the run's own token. Works only when the caller
       # grants `permissions: models: read`; otherwise that lane is skipped.
       GITHUB_MODELS_TOKEN: ${{ github.token }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}
       NODE_OPTIONS: ${{ inputs.node_options }}
       # Only the default branch publishes. A run on any other branch builds,
