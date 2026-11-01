@@ -87,7 +87,8 @@ export async function run(opts) {
   const out = path.resolve(root, opts['report-out'] || path.join(cfg.ledger_dir, 'search-loop-week.json'));
   writeJson(out, report);
   const census = `search-loop ${cfg.site}: mode=${mode} find=${did.find ? `${did.find.targets} targets` : 'skipped'} published=${did.build?.published ?? 0}/${did.build?.quota ?? 0} dropped=${did.build?.dropped ?? 0} related_links=${did.build?.related_links ?? 0} checked=${did.check?.checked ?? 0} wins=${did.check?.wins ?? 0} strengthened=${did.check?.strengthened ?? 0} undone=${did.check?.undone ?? 0} merged=${did.check?.merged ?? 0} indexnow=${did.check?.indexnow ?? 0} report=${path.relative(root, out)}`;
-  return { report, census, nothing, mode, did, out, root, cfg };
+  const stop = did.build?.lanes_out && !did.build.published ? new NamedStop('NO_FREE_MODEL', `every free model lane is out; 0 of ${did.build.quota} page(s) published, the searches stay queued for the next run — ${did.build.lanes_out}`, EXIT.NOTHING) : null;
+  return { report, census, nothing, mode, did, out, root, cfg, stop };
 }
 
 async function main() {
@@ -112,6 +113,10 @@ async function main() {
   console.log(r.census);
   if (o['github-output'] && process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `report=${r.out}\nmode=${r.mode}\npublished=${r.did.build?.published ?? 0}\npages_dir=${path.resolve(r.root, r.cfg.output.dir)}\nledger_dir=${path.resolve(r.root, r.cfg.ledger_dir)}\n`);
   if (r.nothing && r.mode !== 'off') throw new NamedStop('NOTHING_DONE', 'no search was found, no page built and no page checked this run; the report above says which source was not read', EXIT.NOTHING);
+  // Every free lane out and BUILD had searches waiting but published nothing: a
+  // named stop (red run that says why), never a silent 0. The report, the CHECK
+  // work and the ledger are already written and still commit (exit 2, not 1/9).
+  if (r.stop) throw r.stop;
   const keyStop = r.report.notes.find((n) => /NAMED STOP \[FREE_MODEL_KEY_(MISSING|REFUSED)\]/.test(n));
   if (keyStop && !r.did.check?.checked && !r.did.find) throw new NamedStop('FREE_MODEL_KEY', keyStop, EXIT.CREDENTIAL);
 }

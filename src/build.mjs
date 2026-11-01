@@ -127,6 +127,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
         if (r.stop === 'FREE_MODEL_KEY_MISSING' || r.stop === 'FREE_MODEL_KEY_REFUSED') { notes.push(`NAMED STOP [${r.stop}] ${r.reason}; BUILD wrote nothing, CHECK and the report still run`); result.stopped = r.stop; return finish(); }
         failsInRow++;
         if (r.rateLimited || r.stop === 'NO_FREE_MODEL') {
+          result.lanes_out = String(r.reason).slice(0, 400);
           if (result.mode !== 'slow') {
             result.mode = 'slow';
             notes.push(`NAMED NOTE [FREE_MODEL_RATE_LIMITED] the free model route is rate-limited or exhausted (${r.reason}); this run dropped itself to slow for today`);

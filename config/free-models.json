@@ -73,6 +73,11 @@
     "meta/llama-3.3-70b-instruct"
   ],
   "github_models_note": "GitHub Models free tier through the Actions GITHUB_TOKEN (caller grants permissions: models: read). Paid usage is opt-in in GitHub billing and is never enabled; a 429 is the free limit, not a bill.",
+  "gemini_models": [
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash"
+  ],
+  "gemini_models_note": "Gemini API free tier through GEMINI_API_KEY (a Google AI Studio key whose project has NO billing account, so it can never be charged; free-tier requests per model per day). Daily-quota 429 closes the lane for the run.",
   "workers_ai": {
     "model": "@cf/google/gemma-3-12b-it",
     "neurons_per_m_input": 31400,

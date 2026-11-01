@@ -147,6 +147,10 @@ test('rate-limited free model drops the day to slow with a named note', async ()
   assert.equal(r.mode, 'slow');
   assert.match(r.report.notes.join('\n'), /NAMED NOTE \[FREE_MODEL_RATE_LIMITED\]/);
   assert.equal(r.report.state, 'slow');
+  // Nothing published because every lane is out: a named stop with a non-zero exit, never a silent 0.
+  assert.equal(r.did.build.published, 0);
+  assert.equal(r.stop?.stopCode, 'NO_FREE_MODEL');
+  assert.equal(r.stop.code, 2);
 });
 
 test('missing model key is a named stop line; CHECK and report still run', async () => {
