@@ -7,7 +7,7 @@ import path from 'node:path';
 import { ledger } from './ledger.mjs';
 import { searchAnalytics, inspectUrl, dateDaysAgo } from './gsc.mjs';
 import { cloudflareDay } from './analytics.mjs';
-import { centralDate, daysBetween, sha256, fetchText, tokenOverlap } from './util.mjs';
+import { centralDate, daysBetween, sha256, fetchText, tokenOverlap, pastSoft, progress } from './util.mjs';
 import { render, withoutRelatedLink } from './render.mjs';
 import { gate } from './gate.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
@@ -89,7 +89,8 @@ export async function check(cfg, { rules, mode, now = new Date(), fetchImpl = fe
   // IndexNow: every new page once it answers 200 live.
   const pending = live.filter((p) => !p.indexnow_at);
   const liveUrls = [];
-  for (const p of pending.slice(0, 100)) { const r = await fetchText(p.url, { fetchImpl, timeoutMs: 10000 }); if (r.status === 200) liveUrls.push(p.url); }
+  progress('check', `IndexNow: ${pending.length} page(s) not yet submitted`);
+  for (const p of pending.slice(0, 100)) { if (pastSoft()) break; const r = await fetchText(p.url, { fetchImpl, timeoutMs: 10000, retries: 0 }); if (r.status === 200) liveUrls.push(p.url); }
   if (liveUrls.length) {
     const r = await submitIndexNow(cfg, liveUrls, { fetchImpl });
     if (r.notRead) notes.push(`NAMED NOTE [INDEXNOW_NOT_SENT] ${r.notRead}`);
@@ -98,6 +99,7 @@ export async function check(cfg, { rules, mode, now = new Date(), fetchImpl = fe
 
   if (res.skipped) { L.write('pages', book); return res; }
 
+  progress('check', `Search Console rows for ${live.length} live page(s)`);
   const g = live.length ? await gscPages(cfg, now, fetchImpl) : { map: new Map() };
   if (g.notRead) notes.push(`not read: Search Console page data (${g.notRead})`);
 
@@ -107,6 +109,7 @@ export async function check(cfg, { rules, mode, now = new Date(), fetchImpl = fe
     const age = daysBetween(p.published_at, today);
     if (age < cfg.pace.index_window_days || age > 42) continue;
     if (!p.indexed_at || (!p.indexed && daysBetween(p.inspected_at || p.published_at, today) >= 3)) {
+      if (pastSoft()) { inspectFail = "the run's time budget was used before every page was inspected"; break; }
       const r = await inspectUrl(g.site, p.url, { fetchImpl });
       if (!r.ok) { inspectFail = r.reason; break; }
       p.inspected_at = today; p.indexed = r.indexed; if (r.indexed && !p.indexed_at) p.indexed_at = today;
@@ -118,6 +121,7 @@ export async function check(cfg, { rules, mode, now = new Date(), fetchImpl = fe
   const pace = nextPace(cfg, currentPace(cfg, L), sample, now);
   if (pace.reason !== 'already evaluated this week') { L.write('pace', pace.pace); notes.push(`pace: ${pace.reason}`); }
 
+  progress('check', 'checkpoints, strengthen, undo, merge');
   const index = buildIndex(cfg, { withText: true });
   const winners = L.read('winners', { topics: [] });
   const consolidation = L.read('consolidation', { schema: 'search-loop-consolidation-v1', merges: [] });

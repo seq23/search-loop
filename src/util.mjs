@@ -98,16 +98,51 @@ export function tokenOverlap(a, b) {
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export async function fetchText(url, { timeoutMs = 20000, headers = {}, method = 'GET', body, fetchImpl = fetch } = {}) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetchImpl(url, { method, headers, body, signal: ctrl.signal, redirect: 'follow' });
-    const text = await res.text();
-    return { status: res.status, ok: res.ok, text, headers: res.headers };
-  } catch (e) {
-    return { status: 0, ok: false, text: '', error: String(e?.message || e).slice(0, 160) };
-  } finally { clearTimeout(t); }
+// Every outbound request has a timeout that covers the body too, and a bounded
+// retry (network error, timeout, 429, 5xx) — never a hang, never an endless retry.
+export async function fetchText(url, { timeoutMs = 20000, headers = {}, method = 'GET', body, fetchImpl = fetch, retries = 1, retryDelayMs } = {}) {
+  const delay = retryDelayMs ?? (fetchImpl === fetch ? 1500 : 0);
+  let last;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt) await sleep(delay * attempt);
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetchImpl(url, { method, headers, body, signal: ctrl.signal, redirect: 'follow' });
+      const text = await res.text();
+      last = { status: res.status, ok: res.ok, text, headers: res.headers };
+    } catch (e) {
+      last = { status: 0, ok: false, text: '', error: ctrl.signal.aborted ? `timed out after ${Math.round(timeoutMs / 1000)}s` : String(e?.message || e).slice(0, 160) };
+    } finally { clearTimeout(t); }
+    if (!(last.status === 0 || last.status === 429 || last.status >= 500)) return last;
+  }
+  return last;
+}
+
+export const fetchJson = async (url, opts) => {
+  const r = await fetchText(url, opts);
+  let json = {};
+  try { json = r.text ? JSON.parse(r.text) : {}; } catch { /* not JSON */ }
+  return { ...r, json };
+};
+
+// The run clock. A run has a soft budget (no new model call, page or inspection
+// starts after it; the run finishes, writes its report and commits what it has)
+// and a hard ceiling (the watchdog in bin/search-loop.mjs ends the run with
+// NAMED STOP [RUN_HUNG] naming the stage it stalled in). Progress lines show
+// where time goes, so a stall is visible in the log while it happens.
+export const runClock = { start: Date.now(), softAt: Infinity, stage: 'start' };
+export function startClock({ softMinutes, now = Date.now() } = {}) {
+  runClock.start = now; runClock.stage = 'start';
+  runClock.softAt = Number.isFinite(softMinutes) ? now + softMinutes * 60000 : Infinity;
+}
+export const pastSoft = (now = Date.now()) => now > runClock.softAt;
+const quiet = () => Boolean(process.env.NODE_TEST_CONTEXT) || process.env.SEARCH_LOOP_QUIET === '1';
+export function progress(stage, msg = '') {
+  runClock.stage = msg ? `${stage}: ${msg}` : stage;
+  if (quiet()) return;
+  const m = ((Date.now() - runClock.start) / 60000).toFixed(1);
+  console.log(`progress +${m}m ${stage}${msg ? ` — ${msg}` : ''}`);
 }
 
 export function walkHtml(root, dir, { skip = [] } = {}) {

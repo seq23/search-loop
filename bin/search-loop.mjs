@@ -12,7 +12,7 @@ import { check } from '../src/check.mjs';
 import { buildReport, checkReport } from '../src/report.mjs';
 import { currentPace } from '../src/pace.mjs';
 import { ledger } from '../src/ledger.mjs';
-import { NamedStop, EXIT, isoWeek, writeJson } from '../src/util.mjs';
+import { NamedStop, EXIT, isoWeek, writeJson, startClock, progress, runClock } from '../src/util.mjs';
 import { selfTest } from '../src/self-test.mjs';
 import { resetLanes } from '../src/llm.mjs';
 import crypto from 'node:crypto';
@@ -43,6 +43,12 @@ export async function run(opts) {
     console.log(`stagger: ${cfg.site} waits ${mins} min so sites do not hit the shared free lanes together`);
     await new Promise((r) => setTimeout(r, mins * 60000));
   }
+  // Time budget, counted after the stagger. Soft: nothing new starts after it
+  // (model call, page, inspection); the run still writes its report and commits.
+  // Hard: the watchdog in main() ends a stuck run with NAMED STOP [RUN_HUNG].
+  startClock({ softMinutes: opts.softMinutes ?? Number(process.env.SEARCH_LOOP_SOFT_MINUTES || 35) });
+  if (opts.onClockStart) opts.onClockStart();
+  progress('mode', 'reading the global switch');
   const m = await resolveMode({ globalMode: opts['global-mode'], siteMode: cfg.mode, fetchImpl: opts.fetchImpl, now });
   notes.push(...m.notes);
   let mode = m.mode;
@@ -55,18 +61,22 @@ export async function run(opts) {
   // BUILD with no target list (fresh checkout, a replay after main moved) finds first.
   const wantFind = stage === 'find' || (['auto', 'build'].includes(stage) && rulesFor(mode).find === 'weekly' && (!t || (stage === 'auto' && t.week !== isoWeek(now))));
   if (wantFind && rulesFor(mode).find !== 'never') {
+    progress('find', 'start');
     did.find = await find(cfg, { fetchImpl: opts.fetchImpl, now, chat: opts.chat });
     for (const [k, v] of Object.entries(did.find.sources)) if (String(v).startsWith('not read')) notes.push(`FIND ${k}: ${v}`);
   } else if (stage === 'find') notes.push(`FIND skipped: mode=${mode}`);
 
   // BUILD daily.
   if (stage === 'auto' || stage === 'build') {
+    progress('build', 'start');
     did.build = await build(cfg, { mode, rules: rulesFor(mode), now, fetchImpl: opts.fetchImpl, chat: opts.chat, notes });
     if (did.build.mode && did.build.mode !== mode) mode = did.build.mode; // free route rate-limited -> slow for today
   }
   // CHECK + REPAIR (daily; weekly in slow; still runs in off).
+  if (stage === 'auto' || stage === 'check') progress('check', 'start');
   if (stage === 'auto' || stage === 'check') did.check = await check(cfg, { rules: rulesFor(mode), mode, now, fetchImpl: opts.fetchImpl, chat: opts.chat, notes });
 
+  progress('report', 'writing');
   const pace = currentPace(cfg, L).per_day;
   const rules = rulesFor(mode);
   const effectivePace = !rules.build ? 0 : rules.build_cap == null ? pace : Math.min(pace, rules.build_cap);
@@ -91,7 +101,13 @@ async function main() {
     return;
   }
   if (cmd !== 'run') throw new NamedStop('UNKNOWN_COMMAND', `"${cmd}" — use run, validate-config or --self-test`, EXIT.PROBLEMS);
-  const r = await run(o);
+  // Hard ceiling: a run that is still going this long after its clock started is
+  // stuck somewhere no timeout covers; end it loudly with the stage it is in.
+  const hardMin = Number(process.env.SEARCH_LOOP_HARD_MINUTES || 55);
+  const r = await run({ ...o, onClockStart: () => setTimeout(() => {
+    console.error(`NAMED STOP [RUN_HUNG] still running ${hardMin} min after start; stalled in stage "${runClock.stage}". Nothing from this run is committed; the next run retries.`);
+    process.exit(EXIT.INCOMPLETE);
+  }, hardMin * 60000).unref() });
   for (const n of r.report.notes) console.log(`note: ${n}`);
   console.log(r.census);
   if (o['github-output'] && process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `report=${r.out}\nmode=${r.mode}\npublished=${r.did.build?.published ?? 0}\npages_dir=${path.resolve(r.root, r.cfg.output.dir)}\nledger_dir=${path.resolve(r.root, r.cfg.ledger_dir)}\n`);

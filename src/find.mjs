@@ -2,7 +2,7 @@
 // model calls, never SERP scraping. A signal we could not read is written as
 // "not read: <reason>", never invented.
 import { searchAnalytics, dateDaysAgo } from './gsc.mjs';
-import { norm, contentWords, tokenOverlap, fetchText, sleep, isoWeek } from './util.mjs';
+import { norm, contentWords, tokenOverlap, fetchText, sleep, isoWeek, pastSoft, progress } from './util.mjs';
 import { ledger } from './ledger.mjs';
 import { buildIndex } from './site-index.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
@@ -65,6 +65,7 @@ export async function relevanceScreen(cfg, list, { chat, fetchImpl }) {
   const keep = new Set();
   for (let i = 0; i < list.length; i += 50) {
     const batch = list.slice(i, i + 50);
+    progress('find', `free-model screen ${i + 1}-${i + batch.length} of ${list.length}`);
     const r = await chat({ cfg, fetchImpl, maxTokens: 800, messages: [
       { role: 'system', content: 'You screen search queries for one website. Return ONLY JSON.' },
       { role: 'user', content: `Site: ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Topics: ${cfg.topics.join(', ')}.\nKeep a query only if a person in this audience would type it AND a page from this site would be a genuinely useful answer (not a different meaning of the words, not a brand, product or navigation search for someone else).\nQueries:\n${batch.map((c, j) => `${j}. ${c.query}`).join('\n')}\nReturn {"keep":[numbers]}` },
@@ -82,10 +83,10 @@ function suggester(name, urlFor, receipt, fetchImpl, budget) {
   receipt.hosts[name] = { calls: 0, ok: 0, failed: 0, cost_usd: 0 };
   receipt.sources[name] = 'ok';
   return async (q) => {
-    if (fails >= 3 || budget.left <= 0) return null;
+    if (fails >= 3 || budget.left <= 0 || pastSoft()) return null;
     budget.left--;
     receipt.hosts[name].calls++;
-    const r = await fetchText(urlFor(q), { fetchImpl, timeoutMs: 10000, headers: { 'user-agent': 'search-loop/1 (weekly query research; +https://github.com/seq23/search-loop)' } });
+    const r = await fetchText(urlFor(q), { fetchImpl, timeoutMs: 10000, retries: 0, headers: { 'user-agent': 'search-loop/1 (weekly query research; +https://github.com/seq23/search-loop)' } });
     await sleep(fetchImpl === fetch ? 350 : 0);
     let list = null;
     try { const j = JSON.parse(r.text); if (Array.isArray(j?.[1])) list = j[1].map(String); } catch { /* fall through */ }
@@ -151,6 +152,7 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
   // 1. Search Console rows at positions ~8-30 (measured).
   const gscSite = cfg.gsc?.site_url || process.env[cfg.gsc?.site_url_env || 'GSC_SITE_URL'] || null;
   const measured = [];
+  progress('find', 'Search Console queries');
   const sa = await searchAnalytics(gscSite, { startDate: dateDaysAgo(31, now), endDate: dateDaysAgo(3, now), dimensions: ['query', 'page'], rowLimit: 5000 }, { fetchImpl });
   if (sa.ok) {
     receipt.hosts['searchconsole.googleapis.com'] = { calls: 1, ok: 1, failed: 0, cost_usd: 0 };
@@ -183,6 +185,7 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
   const expansions = [];
   for (const s of seeds) { expansions.push(s); if (!isQuestion(s)) for (const p of QUESTION_PREFIXES) expansions.push(`${p} ${s}`); }
   const budget = { left: cfg.find.max_autocomplete_calls };
+  progress('find', 'autocomplete expansions');
   const g = suggester('suggestqueries.google.com', (q) => `https://suggestqueries.google.com/complete/search?client=firefox&hl=en&q=${encodeURIComponent(q)}`, receipt, fetchImpl, budget);
   const b = suggester('api.bing.com', (q) => `https://api.bing.com/osjson.aspx?query=${encodeURIComponent(q)}`, receipt, fetchImpl, budget);
   for (const q of expansions) {
