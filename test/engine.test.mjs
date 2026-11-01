@@ -236,6 +236,8 @@ test('free route is $0 only', () => {
   const r = loadRouting({ root: '.', llm: {} });
   assert.ok(r.models.length >= 1);
   assert.ok(r.models.every((m) => m.endsWith(':free')));
+  assert.ok(!r.models.includes('nvidia/nemotron-3-super-120b-a12b:free'), 'dead ids never routed');
+  assert.ok(r.github.length >= 1 && r.workers.daily_neuron_cap <= 1000);
   assert.equal(MODE_RULES.off.build, false);
 });
 
@@ -279,4 +281,67 @@ test('a model that never answers leaves the search queued (not dropped); BUILD w
   const book = JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pages.json')));
   assert.equal(book.dropped.length, 0);
   assert.ok(r.did.build.model_failed >= 1);
+});
+
+test('free lanes: GitHub Models -> OpenRouter -> metered Workers AI, backoff across lanes, $0 only', async () => {
+  const { freeChat, resetLanes, laneState, worstNeurons } = await import('../src/llm.mjs');
+  const cfg = { root: '.', llm: {} };
+  const msgs = [{ role: 'user', content: 'x'.repeat(3000) }];
+  const J = (status, body, h = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...h } });
+  const env = (o) => { for (const k of ['GITHUB_MODELS_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN']) { if (o[k] === undefined) delete process.env[k]; else process.env[k] = o[k]; } };
+  const noSleep = async () => {};
+
+  // 1. GitHub Models answers first.
+  resetLanes(); env({ GITHUB_MODELS_TOKEN: 't' });
+  let r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: noSleep, fetchImpl: async (u) => (String(u).includes('models.github.ai') ? J(200, { choices: [{ message: { content: 'gh answer' } }] }) : J(500, {})) });
+  assert.equal(r.ok, true); assert.match(r.model, /^github:/);
+
+  // 2. GitHub 429 (daily: retry-after > 1h) -> OpenRouter daily quota -> Workers AI within its metered share.
+  resetLanes(); env({ GITHUB_MODELS_TOKEN: 't', CLOUDFLARE_ACCOUNT_ID: 'a', CLOUDFLARE_API_TOKEN: 'c' });
+  const calls = [];
+  r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: noSleep, fetchImpl: async (u, init) => {
+    const s = String(u); calls.push(s);
+    if (s.includes('models.github.ai')) return J(429, {}, { 'retry-after': '86400' });
+    if (s.includes('openrouter.ai')) return J(429, { error: { message: 'Rate limit exceeded: free-models-per-day' } });
+    if (s.endsWith('/graphql')) return J(200, { data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 100 }, dimensions: { modelId: '@cf/google/gemma-3-12b-it' } }, { sum: { totalNeurons: 5000 }, dimensions: { modelId: '@cf/mistralai/mistral-small-3.1-24b-instruct' } }] }] } } });
+    if (s.includes('/ai/run/')) return J(200, { result: { response: 'workers answer' } });
+    return J(500, {});
+  } });
+  assert.equal(r.ok, true); assert.match(r.model, /^workers:/);
+  assert.match(laneState.closed.openrouter, /free-models-per-day/);
+  assert.equal(calls.filter((c) => c.includes('openrouter.ai')).length, 1, 'a used-up daily quota closes the lane at once');
+
+  // 3. Workers AI fails CLOSED when today's usage cannot be read, and when the share is used.
+  resetLanes(); env({ CLOUDFLARE_ACCOUNT_ID: 'a', CLOUDFLARE_API_TOKEN: 'c' });
+  let ran = 0;
+  r = await freeChat({ cfg, messages: msgs, apiKey: undefined, sleepImpl: noSleep, fetchImpl: async (u) => { if (String(u).includes('/ai/run/')) ran++; return String(u).endsWith('/graphql') ? J(200, { errors: [{ message: 'not authorized' }] }) : J(500, {}); } });
+  assert.equal(r.ok, false); assert.equal(ran, 0, 'no Workers AI call without a usage reading'); assert.match(laneState.closed.workers, /fails closed/);
+  resetLanes();
+  r = await freeChat({ cfg, messages: msgs, apiKey: undefined, sleepImpl: noSleep, fetchImpl: async (u) => { if (String(u).includes('/ai/run/')) ran++; return J(200, { data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 590 }, dimensions: { modelId: '@cf/google/gemma-3-12b-it' } }] }] } } }); } });
+  assert.equal(ran, 0, 'share used -> no call'); assert.match(laneState.closed.workers, /share/);
+  assert.ok(worstNeurons({ neurons_per_m_input: 31400, neurons_per_m_output: 50600 }, msgs, 3500) > 177);
+
+  // 4. Per-minute 429 everywhere -> back off, then succeed on the next round.
+  resetLanes(); env({ GITHUB_MODELS_TOKEN: 't' });
+  let n = 0; const waits = [];
+  r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: async (ms) => waits.push(ms), fetchImpl: async (u) => { if (String(u).includes('models.github.ai')) { n++; return n <= 3 ? J(429, {}, { 'retry-after': '20' }) : J(200, { choices: [{ message: { content: 'after backoff' } }] }); } return J(429, {}, { 'retry-after': '20' }); } });
+  assert.equal(r.ok, true); assert.ok(waits.length >= 1, 'backed off before retrying');
+
+  // 5. Every lane out -> NO_FREE_MODEL, rate-limited (BUILD drops to slow and requeues).
+  resetLanes(); env({ GITHUB_MODELS_TOKEN: 't' });
+  r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: noSleep, fetchImpl: async () => J(429, { error: { message: 'free-models-per-day' } }, { 'retry-after': '90000' }) });
+  assert.equal(r.ok, false); assert.equal(r.stop, 'NO_FREE_MODEL'); assert.equal(r.rateLimited, true);
+
+  // 6. A non-zero cost fails loud.
+  resetLanes(); env({});
+  await assert.rejects(freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: noSleep, fetchImpl: async () => J(200, { usage: { cost: 0.01 }, choices: [{ message: { content: 'x' } }] }) }), /FAIL_LOUD/);
+  env({});
+});
+
+test('stagger spreads sites across 0-39 minutes, deterministically', async () => {
+  const { staggerMinutes } = await import('../bin/search-loop.mjs');
+  const s = ['a.com', 'b.com', 'c.com', 'd.com', 'e.com', 'f.com'].map(staggerMinutes);
+  assert.ok(s.every((m) => m >= 0 && m < 40));
+  assert.ok(new Set(s).size >= 4);
+  assert.equal(staggerMinutes('a.com'), staggerMinutes('a.com'));
 });

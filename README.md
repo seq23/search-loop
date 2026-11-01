@@ -30,6 +30,20 @@ gh variable set SEARCH_LOOP_MODE --body slow -R seq23/search-loop
 
 Her search-readiness checklist (boss-os `src/shared/boss/searchReadiness/checklist.json`), every-page items: title 30–65 chars with the search first and the site name once (b1, b10); meta description 120–160 (b2); one H1 (b3); a 40–60 word "X is …" answer under the H1 (b4); one FAQPage, 3–6 visible questions with 40–60 word answers (b5); complete social tags with a 1200×630 image (b6); descriptive anchors and image alt text (b8); 600+ words (b9); visible published date (d4). Plus: at least one fact whose source answers 200; no unsourced statistics, invented people, quotes, credentials, reviews or ratings; links only to the site's allowed targets (and verified sources); ends in the site's one action; not a near-duplicate of any existing page (5-word shingle Jaccard < 0.35). With `health_gate: health | dental`: no outcome or treatment claims, never "painless", no medical advice, no hours or services beyond the site's `health.real_facts`. A failed draft gets one fix attempt, then it is dropped (and not retried for 28 days) — never published thin.
 
+## The free model lanes ($0 only)
+
+Every site shares the same free capacity, so the engine spreads the load over three lanes and never pays:
+
+| Order | Lane | Credential | How it stays $0 | When it closes for the run |
+|---|---|---|---|---|
+| 1 | **GitHub Models** (`openai/gpt-4.1-mini`, `openai/gpt-4o-mini`, `meta/llama-3.3-70b-instruct`) | the run's own `GITHUB_TOKEN` — caller grants `permissions: models: read` | free tier; paid usage is opt-in on GitHub and never enabled | 401/403 (no permission), daily 429 |
+| 2 | **OpenRouter `:free`** (site roster + engine roster, dead ids excluded) | `OPENROUTER_API_KEY` | only `:free` models priced 0/0; a non-zero `usage.cost` fails loud | key refused, `free-models-per-day` used up |
+| 3 | **Cloudflare Workers AI** (`@cf/google/gemma-3-12b-it`) | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | metered: reads today's usage from Cloudflare analytics before every call; stops at 600 neurons/day of its own model and when the whole account passes 9,000 of the free 10,000 (studios hold 8,500); **fails closed** if usage cannot be read | share used, usage unreadable |
+
+- Per-minute 429s back off (up to 3 rounds, ≤ 6 minutes of waiting) and retry across lanes before giving up.
+- When every lane is out: the run drops to `slow` for the day (`NAMED NOTE [FREE_MODEL_RATE_LIMITED]`), the search stays queued for the next run (never dropped), and the report names each closed lane.
+- **Stagger:** a scheduled run waits a fixed, site-specific 0–39 minutes (hash of `site`) before starting, so sites do not hit the shared lanes together; also give each caller its own cron minute. `llm.stagger: false` turns it off; dispatched runs never wait.
+
 ## Pace
 
 Starts at `pace.start_per_day` (10). Once a week: if more than half of the pages 14–42 days old are indexed (Search Console URL Inspection, free), +5/day up to the cap (30); otherwise halved. If indexing cannot be read, the pace holds. Every change is logged with its reason in `pace.json`.
@@ -77,6 +91,7 @@ on:
 permissions:
   contents: write
   actions: write
+  models: read      # the GitHub Models free lane
 concurrency:
   group: search-loop
   cancel-in-progress: false
@@ -91,6 +106,7 @@ jobs:
       GSC_SITE_URL: ${{ secrets.GSC_SITE_URL }}
       BING_WEBMASTER_API_KEY: ${{ secrets.BING_WEBMASTER_API_KEY }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 ```
 
 Optional inputs: `setup_command` (e.g. `npm ci --ignore-scripts`), `post_build_command` (the site's own build that folds new pages into sitemaps — runs only when pages were published), `commit_command` (the site's own commit helper), `node_options`, `stage`, `config`. Only the default branch publishes; a run on any other branch is a **proof run** (builds, gates, reports, uploads the pages as `search-loop-pages`, commits nothing). Add `.search-loop-engine/` and `.search-loop-run.log` to the site's `.gitignore`.

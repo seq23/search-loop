@@ -50,6 +50,8 @@ on:
         required: false
       CLOUDFLARE_API_TOKEN:
         required: false
+      CLOUDFLARE_ACCOUNT_ID:
+        required: false
       INDEXNOW_KEY:
         required: false
     outputs:
@@ -71,6 +73,10 @@ jobs:
       GSC_SITE_URL: ${{ secrets.GSC_SITE_URL }}
       BING_WEBMASTER_API_KEY: ${{ secrets.BING_WEBMASTER_API_KEY }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # GitHub Models free tier: the run's own token. Works only when the caller
+      # grants `permissions: models: read`; otherwise that lane is skipped.
+      GITHUB_MODELS_TOKEN: ${{ github.token }}
       INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}
       NODE_OPTIONS: ${{ inputs.node_options }}
       # Only the default branch publishes. A run on any other branch builds,

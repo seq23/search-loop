@@ -14,6 +14,8 @@ import { currentPace } from '../src/pace.mjs';
 import { ledger } from '../src/ledger.mjs';
 import { NamedStop, EXIT, isoWeek, writeJson } from '../src/util.mjs';
 import { selfTest } from '../src/self-test.mjs';
+import { resetLanes } from '../src/llm.mjs';
+import crypto from 'node:crypto';
 
 function args(argv) {
   const o = { _: [] };
@@ -24,12 +26,23 @@ function args(argv) {
   return o;
 }
 
+export const staggerMinutes = (site) => parseInt(crypto.createHash('sha256').update(String(site)).digest('hex').slice(0, 8), 16) % 40;
+
 export async function run(opts) {
   const root = path.resolve(opts.root || process.cwd());
   const { cfg, problems } = loadConfig(opts.config || 'search-loop.config.json', root);
   if (problems.length) throw new NamedStop('CONFIG_INVALID', `${opts.config || 'search-loop.config.json'}: ${problems.join('; ')}`, EXIT.PROBLEMS);
   const now = opts.now || new Date();
   const notes = [];
+  resetLanes();
+  // Stagger: every site shares the same free lanes, so a scheduled run waits a
+  // fixed, site-specific 0-39 minutes before it starts (runner minutes are free on
+  // public repos). Dispatched runs start at once. cfg.llm.stagger=false turns it off.
+  if (process.env.GITHUB_EVENT_NAME === 'schedule' && cfg.llm?.stagger !== false && !opts.noStagger) {
+    const mins = staggerMinutes(cfg.site);
+    console.log(`stagger: ${cfg.site} waits ${mins} min so sites do not hit the shared free lanes together`);
+    await new Promise((r) => setTimeout(r, mins * 60000));
+  }
   const m = await resolveMode({ globalMode: opts['global-mode'], siteMode: cfg.mode, fetchImpl: opts.fetchImpl, now });
   notes.push(...m.notes);
   let mode = m.mode;

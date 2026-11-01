@@ -46,6 +46,40 @@
         "prompt": "0",
         "completion": "0"
       }
+    },
+    {
+      "id": "xingchen-agi/xing4.0-29b-a4b:free",
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      }
+    },
+    {
+      "id": "nvidia/nemotron-3.5-super-vl:free",
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      }
     }
-  ]
+  ],
+  "excluded_models": {
+    "_rule": "Dead or refused ids; never routed.",
+    "nvidia/nemotron-3-super-120b-a12b:free": "HTTP 404 on 2026-11-01 (delisted)",
+    "thinkingmachines/inkling:free": "403 'only available on agentic harnesses'"
+  },
+  "github_models": [
+    "openai/gpt-4.1-mini",
+    "openai/gpt-4o-mini",
+    "meta/llama-3.3-70b-instruct"
+  ],
+  "github_models_note": "GitHub Models free tier through the Actions GITHUB_TOKEN (caller grants permissions: models: read). Paid usage is opt-in in GitHub billing and is never enabled; a 429 is the free limit, not a bill.",
+  "workers_ai": {
+    "model": "@cf/google/gemma-3-12b-it",
+    "neurons_per_m_input": 31400,
+    "neurons_per_m_output": 50600,
+    "max_output_tokens": 3500,
+    "daily_neuron_cap": 600,
+    "account_ceiling": 9000,
+    "_why": "The account's free Workers AI allowance is 10,000 neurons/day and overage is billed. Studios hold 8,500 (creator-studios worker/lib/freeAi.ts, @cf/mistralai/mistral-small-3.1-24b-instruct). The engine uses a model nobody else uses so its own usage is measurable, reads today's usage from Cloudflare analytics before every call, stops at 600 neurons/day of its own and whenever the whole account is past 9,000, and fails closed if usage cannot be read. Rates: $0.345/$0.556 per M tokens at $0.011 per 1,000 neurons, rounded up."
+  }
 }
