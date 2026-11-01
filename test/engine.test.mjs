@@ -293,7 +293,7 @@ test('free lanes: Gemini -> OpenRouter -> metered Workers AI, backoff across lan
   const cfg = { root: '.', llm: {} };
   const msgs = [{ role: 'user', content: 'x'.repeat(3000) }];
   const J = (status, body, h = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...h } });
-  const env = (o) => { for (const k of ['GEMINI_API_KEY', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN']) { if (o[k] === undefined) delete process.env[k]; else process.env[k] = o[k]; } };
+  const env = (o) => { for (const k of ['GEMINI_API_KEY', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_WORKERS_AI_TOKEN']) { if (o[k] === undefined) delete process.env[k]; else process.env[k] = o[k]; } };
   const noSleep = async () => {};
 
   // 1. Gemini answers first; the retired GitHub Models endpoint is never asked.
@@ -304,20 +304,35 @@ test('free lanes: Gemini -> OpenRouter -> metered Workers AI, backoff across lan
   assert.equal(asked1.filter((u) => u.includes('models.github.ai')).length, 0, 'GitHub Models (retired 2026-07-30) is not a lane');
 
   // 2. Gemini daily 429 on both models -> OpenRouter daily quota -> Workers AI within its metered share.
-  resetLanes(); env({ GEMINI_API_KEY: 'g', CLOUDFLARE_ACCOUNT_ID: 'a', CLOUDFLARE_API_TOKEN: 'c' });
-  const calls = [];
+  //    Usage is read with CLOUDFLARE_API_TOKEN; the model runs with CLOUDFLARE_WORKERS_AI_TOKEN
+  //    (a Workers-AI-only token cannot read analytics), thinking off, OpenAI-shaped answer read.
+  resetLanes(); env({ GEMINI_API_KEY: 'g', CLOUDFLARE_ACCOUNT_ID: 'a', CLOUDFLARE_API_TOKEN: 'c', CLOUDFLARE_WORKERS_AI_TOKEN: 'ai' });
+  const calls = []; const auth = {}; let runBody = null;
   r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: noSleep, fetchImpl: async (u, init) => {
     const s = String(u); calls.push(s);
+    if (s.endsWith('/graphql')) auth.graphql = init.headers.authorization;
+    if (s.includes('/ai/run/')) { auth.run = init.headers.authorization; runBody = JSON.parse(init.body); return J(200, { result: { choices: [{ message: { content: 'workers answer' } }] } }); }
     if (s.includes('generativelanguage')) return J(429, [{ error: { message: 'Quota exceeded: GenerateRequestsPerDayPerProjectPerModel-FreeTier' } }]);
     if (s.includes('openrouter.ai')) return J(429, { error: { message: 'Rate limit exceeded: free-models-per-day' } });
-    if (s.endsWith('/graphql')) return J(200, { data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 100 }, dimensions: { modelId: '@cf/google/gemma-3-12b-it' } }, { sum: { totalNeurons: 5000 }, dimensions: { modelId: '@cf/mistralai/mistral-small-3.1-24b-instruct' } }] }] } } });
+    if (s.endsWith('/graphql')) return J(200, { data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 100 }, dimensions: { modelId: '@cf/google/gemma-4-26b-a4b-it' } }, { sum: { totalNeurons: 5000 }, dimensions: { modelId: '@cf/mistralai/mistral-small-3.1-24b-instruct' } }] }] } } });
     if (s.includes('/ai/run/')) return J(200, { result: { response: 'workers answer' } });
     return J(500, {});
   } });
-  assert.equal(r.ok, true); assert.match(r.model, /^workers:/);
+  assert.equal(r.ok, true); assert.match(r.model, /^workers:/); assert.equal(r.answer, 'workers answer');
+  assert.equal(auth.graphql, 'Bearer c', 'usage read with CLOUDFLARE_API_TOKEN');
+  assert.equal(auth.run, 'Bearer ai', 'model run with CLOUDFLARE_WORKERS_AI_TOKEN');
+  assert.equal(runBody.chat_template_kwargs?.enable_thinking, false, 'thinking off: the output budget is the answer');
   assert.match(laneState.closed.gemini, /daily quota/);
   assert.match(laneState.closed.openrouter, /free-models-per-day/);
   assert.equal(calls.filter((c) => c.includes('openrouter.ai')).length, 1, 'a used-up daily quota closes the lane at once');
+
+  // 2b. A withdrawn Workers AI model closes the lane for the run (one request, not one per page).
+  resetLanes(); env({ CLOUDFLARE_ACCOUNT_ID: 'a', CLOUDFLARE_API_TOKEN: 'c' });
+  let runs = 0;
+  const gone = async (u) => { const s = String(u); if (s.includes('/ai/run/')) { runs++; return J(400, { success: false, errors: [{ code: 5018, message: 'AiError: Ai: This account is not allowed to access @cf/google/gemma-3-12b-it.' }] }); } return s.endsWith('/graphql') ? J(200, { data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [] }] } } }) : J(500, {}); };
+  r = await freeChat({ cfg, messages: msgs, apiKey: undefined, sleepImpl: noSleep, fetchImpl: gone });
+  r = await freeChat({ cfg, messages: msgs, apiKey: undefined, sleepImpl: noSleep, fetchImpl: gone });
+  assert.equal(runs, 1); assert.match(laneState.closed.workers, /not allowed to access/);
 
   // 3. Workers AI fails CLOSED when today's usage cannot be read, and when the share is used.
   resetLanes(); env({ CLOUDFLARE_ACCOUNT_ID: 'a', CLOUDFLARE_API_TOKEN: 'c' });
@@ -325,7 +340,7 @@ test('free lanes: Gemini -> OpenRouter -> metered Workers AI, backoff across lan
   r = await freeChat({ cfg, messages: msgs, apiKey: undefined, sleepImpl: noSleep, fetchImpl: async (u) => { if (String(u).includes('/ai/run/')) ran++; return String(u).endsWith('/graphql') ? J(200, { errors: [{ message: 'not authorized' }] }) : J(500, {}); } });
   assert.equal(r.ok, false); assert.equal(ran, 0, 'no Workers AI call without a usage reading'); assert.match(laneState.closed.workers, /fails closed/);
   resetLanes();
-  r = await freeChat({ cfg, messages: msgs, apiKey: undefined, sleepImpl: noSleep, fetchImpl: async (u) => { if (String(u).includes('/ai/run/')) ran++; return J(200, { data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 590 }, dimensions: { modelId: '@cf/google/gemma-3-12b-it' } }] }] } } }); } });
+  r = await freeChat({ cfg, messages: msgs, apiKey: undefined, sleepImpl: noSleep, fetchImpl: async (u) => { if (String(u).includes('/ai/run/')) ran++; return J(200, { data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 590 }, dimensions: { modelId: '@cf/google/gemma-4-26b-a4b-it' } }] }] } } }); } });
   assert.equal(ran, 0, 'share used -> no call'); assert.match(laneState.closed.workers, /share/);
   assert.ok(worstNeurons({ neurons_per_m_input: 31400, neurons_per_m_output: 50600 }, msgs, 3500) > 177);
 

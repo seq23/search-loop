@@ -74,12 +74,13 @@
   ],
   "gemini_models_note": "Gemini API free tier through GEMINI_API_KEY (a Google AI Studio key whose project has NO billing account, so it can never be charged; free-tier requests per model per day). Daily-quota 429 closes the lane for the run.",
   "workers_ai": {
-    "model": "@cf/google/gemma-3-12b-it",
-    "neurons_per_m_input": 31400,
-    "neurons_per_m_output": 50600,
+    "model": "@cf/google/gemma-4-26b-a4b-it",
+    "extra_body": { "chat_template_kwargs": { "enable_thinking": false } },
+    "neurons_per_m_input": 9091,
+    "neurons_per_m_output": 27273,
     "max_output_tokens": 3500,
     "daily_neuron_cap": 600,
     "account_ceiling": 9000,
-    "_why": "The account's free Workers AI allowance is 10,000 neurons/day and overage is billed. Studios hold 8,500 (creator-studios worker/lib/freeAi.ts, @cf/mistralai/mistral-small-3.1-24b-instruct). The engine uses a model nobody else uses so its own usage is measurable, reads today's usage from Cloudflare analytics before every call, stops at 600 neurons/day of its own and whenever the whole account is past 9,000, and fails closed if usage cannot be read. Rates: $0.345/$0.556 per M tokens at $0.011 per 1,000 neurons, rounded up."
+    "_why": "The account's free Workers AI allowance is 10,000 neurons/day and overage is billed. Studios hold 8,500 (creator-studios worker/lib/freeAi.ts, @cf/mistralai/mistral-small-3.1-24b-instruct). The engine uses a model nobody else uses (@cf/google/gemma-3-12b-it was withdrawn: 'This account is not allowed to access', 2026-11-01; now gemma-4-26b-a4b-it with thinking off so the output budget is the answer) so its own usage is measurable, reads today's usage from Cloudflare analytics before every call, stops at 600 neurons/day of its own and whenever the whole account is past 9,000, and fails closed if usage cannot be read. Rates (developers.cloudflare.com/workers-ai/platform/pricing, 2026-11-01): 9,091 / 27,273 neurons per M input / output tokens."
   }
 }
