@@ -8,19 +8,12 @@
     "fallback_to_paid": false
   },
   "pricing_snapshot": {
-    "source": "copied from seq23/sprylabs-hpc-site config/llm_routing.json on 2026-11-01",
+    "source": "GET https://openrouter.ai/api/v1/models (unauthenticated), 2026-11-01: nvidia/nemotron-3-super-120b-a12b:free returned HTTP 404 (no longer listed) on the first search-loop run and was replaced",
     "selection_rule": "pricing.prompt == \"0\" && pricing.completion == \"0\" (and request/web_search absent or \"0\"), context_length >= 32000, text output, general instruct model; meta-routers (openrouter/free) excluded because they choose the model for us"
   },
   "free_models": [
     {
-      "id": "nvidia/nemotron-3-super-120b-a12b:free",
-      "pricing": {
-        "prompt": "0",
-        "completion": "0"
-      }
-    },
-    {
-      "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "id": "nvidia/nemotron-3.5-lightning:free",
       "pricing": {
         "prompt": "0",
         "completion": "0"
@@ -35,6 +28,20 @@
     },
     {
       "id": "google/gemma-4-26b-a4b-it:free",
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      }
+    },
+    {
+      "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      }
+    },
+    {
+      "id": "dots-studio/dots-3-note-preview:free",
       "pricing": {
         "prompt": "0",
         "completion": "0"

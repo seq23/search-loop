@@ -39,7 +39,8 @@ export async function run(opts) {
 
   // FIND weekly (never in off).
   const t = L.read('targets', null);
-  const wantFind = stage === 'find' || (stage === 'auto' && rulesFor(mode).find === 'weekly' && (!t || t.week !== isoWeek(now)));
+  // BUILD with no target list (fresh checkout, a replay after main moved) finds first.
+  const wantFind = stage === 'find' || (['auto', 'build'].includes(stage) && rulesFor(mode).find === 'weekly' && (!t || (stage === 'auto' && t.week !== isoWeek(now))));
   if (wantFind && rulesFor(mode).find !== 'never') {
     did.find = await find(cfg, { fetchImpl: opts.fetchImpl, now, chat: opts.chat });
     for (const [k, v] of Object.entries(did.find.sources)) if (String(v).startsWith('not read')) notes.push(`FIND ${k}: ${v}`);

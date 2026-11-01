@@ -144,6 +144,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
       problems = gate({ query: target.query, html, facts: draft.facts }, { cfg, corpus: index, siblings, selfRoute: route });
       if (!problems.length) break;
     }
+    if (!html && !problems) { result.model_failed = (result.model_failed || 0) + 1; continue; } // model never answered: retry next run, not a drop
     if (!html || problems?.length) {
       book.dropped.push({ query: target.query, at: today, reason: (problems || ['no draft from the free model']).slice(0, 5) });
       result.dropped++;
@@ -173,7 +174,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
   return finish();
   function finish() {
     L.write('pages', book);
-    if (!result.published && !result.stopped) notes.push(`BUILD published 0 of quota ${result.quota}: ${result.dropped} draft(s) failed the gate and were dropped`);
+    if (!result.published && !result.stopped) notes.push(`BUILD published 0 of quota ${result.quota}: ${result.dropped} draft(s) failed the gate and were dropped; ${result.model_failed || 0} got no answer from the free model and stay queued`);
     return result;
   }
 }

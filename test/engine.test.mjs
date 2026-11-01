@@ -270,3 +270,13 @@ test('meta descriptions over 160 characters are cut at a word boundary, never pa
   assert.ok(m.length >= 120 && m.length <= 160, String(m.length));
   assert.equal(fitMeta('short one'), 'short one');
 });
+
+test('a model that never answers leaves the search queued (not dropped); BUILD with no targets runs FIND first', async () => {
+  const root = site();
+  const down = async () => ({ ok: false, stop: 'NO_FREE_MODEL', rateLimited: false, reason: 'all empty' });
+  const r = await run({ root, now: NOW, 'global-mode': 'normal', stage: 'build', fetchImpl: fakeFetch(), chat: down });
+  assert.ok(r.did.find && r.did.find.targets > 0, 'build stage ran FIND because no targets existed');
+  const book = JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pages.json')));
+  assert.equal(book.dropped.length, 0);
+  assert.ok(r.did.build.model_failed >= 1);
+});
