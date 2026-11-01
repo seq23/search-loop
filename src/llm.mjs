@@ -48,7 +48,9 @@ async function post(fetchImpl, url, headers, body, timeoutMs) {
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetchImpl(url, { method: 'POST', signal: ctrl.signal, headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
-    const payload = await res.json().catch(() => ({}));
+    const raw = await res.text();
+    let payload = {};
+    try { payload = JSON.parse(raw); } catch { payload = { _raw: `${res.headers.get('content-type') || '?'} "${raw.slice(0, 40)}"` }; }
     return { res, payload };
   } catch (e) { return { error: ctrl.signal.aborted ? `timed out after ${Math.round(timeoutMs / 1000)}s` : String(e?.message || e).slice(0, 120), timedOut: ctrl.signal.aborted }; } finally { clearTimeout(t); }
 }
@@ -80,7 +82,7 @@ async function githubLane({ route, messages, maxTokens, fetchImpl, timeoutMs, at
     if (res.status === 401 || res.status === 403) { laneState.closed.github = `GitHub Models refused the token (HTTP ${res.status}); the caller needs permissions: models: read`; attempts.push({ lane: 'github', model, status: `http_${res.status}` }); return { next: true }; }
     if (res.status === 429) { attempts.push({ lane: 'github', model, status: 'http_429' }); const ra = retryAfter(res); if (ra != null && ra > 3600) continue; soonest = Math.min(soonest ?? Infinity, ra ?? 60); continue; }
     const answer = payload?.choices?.[0]?.message?.content || '';
-    if (!res.ok || !answer.trim()) { attempts.push({ lane: 'github', model, status: res.ok ? 'empty' : `http_${res.status}` }); continue; }
+    if (!res.ok || !answer.trim()) { attempts.push({ lane: 'github', model, status: (res.ok ? 'empty' : `http_${res.status}`) + (payload?._raw ? ` non-JSON ${payload._raw}` : '') }); continue; }
     return { ok: true, answer, model: `github:${model}` };
   }
   return { retryIn: soonest };
@@ -107,7 +109,7 @@ async function geminiLane({ route, messages, maxTokens, fetchImpl, timeoutMs, at
       continue;
     }
     const answer = payload?.choices?.[0]?.message?.content || '';
-    if (!res.ok || !answer.trim()) { attempts.push({ lane: 'gemini', model, status: res.ok ? 'empty' : `http_${res.status}` }); continue; }
+    if (!res.ok || !answer.trim()) { attempts.push({ lane: 'gemini', model, status: (res.ok ? 'empty' : `http_${res.status}`) + (payload?._raw ? ` non-JSON ${payload._raw}` : '') }); continue; }
     return { ok: true, answer, model: `gemini:${model}` };
   }
   if (route.gemini.length && route.gemini.every((m) => laneState.slow[`gemini:${m}`] === 'free daily quota used')) laneState.closed.gemini = 'Gemini free daily quota used up';
@@ -135,7 +137,7 @@ async function openrouterLane({ route, messages, maxTokens, fetchImpl, timeoutMs
     }
     if (res.status === 404) { attempts.push({ lane: 'openrouter', model, status: 'http_404 (model gone)' }); continue; }
     const answer = payload?.choices?.[0]?.message?.content || '';
-    if (!res.ok || !answer.trim()) { attempts.push({ lane: 'openrouter', model, status: res.ok ? 'empty' : `http_${res.status}` }); continue; }
+    if (!res.ok || !answer.trim()) { attempts.push({ lane: 'openrouter', model, status: (res.ok ? 'empty' : `http_${res.status}`) + (payload?._raw ? ` non-JSON ${payload._raw}` : '') }); continue; }
     return { ok: true, answer, model: payload.model || model };
   }
   return { retryIn: soonest };
