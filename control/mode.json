@@ -1,0 +1,11 @@
+{
+  "schema": "search-loop-mode-v1",
+  "mode": "normal",
+  "synced_at": "2026-11-01T13:00:00Z",
+  "source": "repository variable SEARCH_LOOP_MODE on seq23/search-loop",
+  "values": {
+    "normal": "full pace",
+    "slow": "FIND weekly, BUILD max 3 pages/site/day, CHECK+REPAIR weekly, no strengthening rewrites",
+    "off": "no FIND/BUILD/REPAIR; CHECK and the weekly report still run"
+  }
+}

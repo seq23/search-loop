@@ -1,0 +1,42 @@
+name: mode-sync
+
+# Mirrors the repository variable SEARCH_LOOP_MODE (normal | slow | off) into
+# control/mode.json, which every site's run reads with no token. Hourly, plus
+# on demand. It also re-stamps the file weekly so a reader can tell a live
+# switch from a dead sync (and so GitHub never disables this schedule).
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mode-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mirror SEARCH_LOOP_MODE into control/mode.json
+        env:
+          WANT: ${{ vars.SEARCH_LOOP_MODE }}
+        run: |
+          set -euo pipefail
+          want="$(printf '%s' "${WANT:-normal}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+          case "$want" in normal|slow|off) ;; *) echo "NAMED STOP [MODE_UNKNOWN] SEARCH_LOOP_MODE='$WANT' is not normal, slow or off; control/mode.json left as it was. Fix with: gh variable set SEARCH_LOOP_MODE --body slow -R seq23/search-loop" >&2; exit 1;; esac
+          have="$(jq -r '.mode' control/mode.json 2>/dev/null || echo none)"
+          synced="$(jq -r '.synced_at' control/mode.json 2>/dev/null || echo 1970-01-01T00:00:00Z)"
+          age_days=$(( ( $(date -u +%s) - $(date -u -d "$synced" +%s) ) / 86400 ))
+          if [ "$want" = "$have" ] && [ "$age_days" -lt 6 ]; then echo "mode-sync: mode=$want unchanged (synced ${age_days}d ago)"; exit 0; fi
+          jq -n --arg m "$want" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{schema:"search-loop-mode-v1", mode:$m, synced_at:$t, source:"repository variable SEARCH_LOOP_MODE on seq23/search-loop", values:{normal:"full pace", slow:"FIND weekly, BUILD max 3 pages/site/day, CHECK+REPAIR weekly, no strengthening rewrites", off:"no FIND/BUILD/REPAIR; CHECK and the weekly report still run"}}' > control/mode.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add control/mode.json
+          git commit -q -m "mode-sync: SEARCH_LOOP_MODE=$want"
+          git push
+          echo "mode-sync: mode=$want (was $have)"

@@ -1,0 +1,156 @@
+name: search-loop (reusable)
+
+# Called by each selling site:
+#   uses: seq23/search-loop/.github/workflows/search-loop.yml@v1
+# The engine runs at the same ref (input engine_ref, default v1). It reads the
+# global switch (control/mode.json, mirrored from the SEARCH_LOOP_MODE
+# repository variable) itself; the site config may only lower it.
+on:
+  workflow_call:
+    inputs:
+      config:
+        description: Path of the site's search-loop.config.json
+        type: string
+        default: search-loop.config.json
+      stage:
+        description: auto | find | build | check | report
+        type: string
+        default: auto
+      engine_ref:
+        description: Engine version to run (keep equal to the @ref in `uses:`)
+        type: string
+        default: v1
+      setup_command:
+        description: Optional site setup before the engine (e.g. npm ci --ignore-scripts)
+        type: string
+        default: ""
+      post_build_command:
+        description: Optional site build that folds new pages into sitemaps/heads; runs only when pages changed
+        type: string
+        default: ""
+      commit_command:
+        description: Optional site commit helper; default commits the ledger, the pages and the pages it linked from, then pushes
+        type: string
+        default: ""
+      node_options:
+        description: Optional NODE_OPTIONS for the site's own build (e.g. --max-old-space-size=3072)
+        type: string
+        default: ""
+      commit_message:
+        type: string
+        default: "search loop: daily pages, checks and ledger"
+    secrets:
+      OPENROUTER_API_KEY:
+        required: false
+      GSC_SERVICE_ACCOUNT_JSON:
+        required: false
+      GSC_SITE_URL:
+        required: false
+      BING_WEBMASTER_API_KEY:
+        required: false
+      CLOUDFLARE_API_TOKEN:
+        required: false
+      INDEXNOW_KEY:
+        required: false
+    outputs:
+      mode:
+        value: ${{ jobs.loop.outputs.mode }}
+      published:
+        value: ${{ jobs.loop.outputs.published }}
+
+jobs:
+  loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    outputs:
+      mode: ${{ steps.engine.outputs.mode }}
+      published: ${{ steps.engine.outputs.published }}
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      GSC_SERVICE_ACCOUNT_JSON: ${{ secrets.GSC_SERVICE_ACCOUNT_JSON }}
+      GSC_SITE_URL: ${{ secrets.GSC_SITE_URL }}
+      BING_WEBMASTER_API_KEY: ${{ secrets.BING_WEBMASTER_API_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}
+      NODE_OPTIONS: ${{ inputs.node_options }}
+      # Only the default branch publishes. A run on any other branch builds,
+      # gates and reports, and uploads the pages as an artifact: a proof run.
+      PUBLISH: ${{ github.ref_name == github.event.repository.default_branch && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: seq23/search-loop
+          ref: ${{ inputs.engine_ref }}
+          path: .search-loop-engine
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Name any missing secret (the run keeps going)
+        run: |
+          for s in OPENROUTER_API_KEY GSC_SERVICE_ACCOUNT_JSON GSC_SITE_URL; do
+            if [ -z "${!s}" ]; then echo "NAMED STOP [SECRET_MISSING_$s] repository secret $s is not passed to search-loop; the stages that need it write 'not read' and the rest run. Add it in the site repo's Settings -> Secrets and pass it in the caller's secrets: block."; fi
+          done
+      - name: Site setup
+        if: inputs.setup_command != ''
+        run: ${{ inputs.setup_command }}
+      - name: Validate the site config
+        run: node .search-loop-engine/bin/search-loop.mjs validate-config --config "${{ inputs.config }}"
+      - name: Run the search loop
+        id: engine
+        run: |
+          set +e
+          node .search-loop-engine/bin/search-loop.mjs run --config "${{ inputs.config }}" --stage "${{ inputs.stage }}" --github-output 2>&1 | tee .search-loop-run.log
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "### search-loop" >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^(search-loop |note: |NAMED )' .search-loop-run.log >> "$GITHUB_STEP_SUMMARY" || true
+          exit 0
+      - name: Site build for new pages
+        if: inputs.post_build_command != '' && steps.engine.outputs.published != '0' && steps.engine.outputs.published != ''
+        run: ${{ inputs.post_build_command }}
+      - name: Commit and push (default branch only)
+        if: env.PUBLISH == 'true' && steps.engine.outputs.exit_code != '1' && steps.engine.outputs.exit_code != '9'
+        env:
+          COMMIT_MESSAGE: ${{ inputs.commit_message }}
+          COMMIT_COMMAND: ${{ inputs.commit_command }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "$COMMIT_COMMAND" ]; then bash -c "$COMMIT_COMMAND"; exit $?; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then echo "search-loop: nothing to commit"; exit 0; fi
+          git commit -q -m "$COMMIT_MESSAGE"
+          for i in 1 2 3 4 5; do
+            git push origin HEAD:${{ github.event.repository.default_branch }} && exit 0
+            git pull --rebase origin ${{ github.event.repository.default_branch }} || { echo "NAMED STOP [PUSH_CONFLICT] rebase onto the default branch failed; the next run redoes today's work" >&2; exit 9; }
+          done
+          echo "NAMED STOP [PUSH_FAILED] five push attempts failed" >&2; exit 9
+      - name: Upload the weekly report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-loop-week
+          path: ${{ steps.engine.outputs.report || 'search-loop-week.json' }}
+          if-no-files-found: error
+          overwrite: true
+      - name: Upload the pages (proof runs)
+        if: always() && env.PUBLISH != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-loop-pages
+          path: |
+            ${{ steps.engine.outputs.pages_dir }}
+            ${{ steps.engine.outputs.ledger_dir }}/pages.json
+            ${{ steps.engine.outputs.ledger_dir }}/drafts/**
+          if-no-files-found: ignore
+      - name: Engine exit
+        if: always()
+        run: |
+          code="${{ steps.engine.outputs.exit_code }}"
+          [ -n "$code" ] || { echo "NAMED STOP [ENGINE_DID_NOT_RUN] the engine step produced no exit code" >&2; exit 9; }
+          exit "$code"

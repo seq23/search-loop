@@ -1,0 +1,16 @@
+{
+  "name": "search-loop",
+  "version": "1.0.0",
+  "description": "One shared search growth engine for every selling site: find easy searches, publish a page a search, check at 2/4/8 weeks, strengthen, undo or merge, report weekly.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "engines": { "node": ">=22" },
+  "bin": { "search-loop": "bin/search-loop.mjs" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "self-test": "node bin/search-loop.mjs --self-test",
+    "validate": "node validators/validate.mjs && node validators/validate.mjs --self-test",
+    "check": "npm run validate && npm test && npm run self-test"
+  }
+}

@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/seq23/search-loop/schema/search-loop-week-v1.json",
+  "title": "search-loop-week-v1",
+  "description": "One site, one run of the search loop, the last 7 days. Uploaded as the Actions artifact search-loop-week on every run. A metric whose source could not be read is the string \"not read: <reason>\", never 0.",
+  "type": "object",
+  "required": [
+    "schema",
+    "site",
+    "generated_at",
+    "state",
+    "published",
+    "indexed",
+    "pace",
+    "ai_visitors",
+    "ai_bot_hits",
+    "conversions",
+    "wins",
+    "undone",
+    "merged",
+    "notes",
+    "run_url"
+  ],
+  "properties": {
+    "schema": {
+      "const": "search-loop-week-v1"
+    },
+    "week": {
+      "type": "string",
+      "description": "ISO week on America/Chicago"
+    },
+    "site": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "state": {
+      "enum": [
+        "running",
+        "slow",
+        "off",
+        "stopped"
+      ],
+      "description": "running = normal mode; slow / off = the throttle; stopped = a named stop (see notes)"
+    },
+    "published": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "new pages published in the last 7 days"
+    },
+    "indexed": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "string",
+          "pattern": "^not read: .+"
+        }
+      ],
+      "description": "engine pages Search Console reports indexed (URL Inspection)"
+    },
+    "pace": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "pages per day allowed today after the mode cap (0 when off)"
+    },
+    "ai_visitors": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "string",
+          "pattern": "^not read: .+"
+        }
+      ],
+      "description": "visits referred by AI answer engines, by referrer hostname only, last 7 days"
+    },
+    "ai_bot_hits": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "string",
+          "pattern": "^not read: .+"
+        }
+      ],
+      "description": "requests from AI crawlers/fetchers, last 7 days"
+    },
+    "conversions": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "string",
+          "pattern": "^not read: .+"
+        }
+      ],
+      "description": "form fills / checkouts"
+    },
+    "wins": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "undone": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "merged": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "run_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

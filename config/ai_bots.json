@@ -1,0 +1,20 @@
+{
+  "_what": "User-agent tokens of AI crawlers and AI answer fetchers. Matched as substrings of the user agent; counts only, no IPs.",
+  "bots": [
+    { "token": "GPTBot", "name": "GPTBot (OpenAI training)" },
+    { "token": "OAI-SearchBot", "name": "OAI-SearchBot (ChatGPT search)" },
+    { "token": "ChatGPT-User", "name": "ChatGPT-User (ChatGPT fetch)" },
+    { "token": "PerplexityBot", "name": "PerplexityBot" },
+    { "token": "Perplexity-User", "name": "Perplexity-User" },
+    { "token": "ClaudeBot", "name": "ClaudeBot" },
+    { "token": "Claude-User", "name": "Claude-User" },
+    { "token": "Google-Extended", "name": "Google-Extended" },
+    { "token": "Applebot-Extended", "name": "Applebot-Extended" },
+    { "token": "CCBot", "name": "CCBot (Common Crawl)" },
+    { "token": "Bytespider", "name": "Bytespider" },
+    { "token": "meta-externalagent", "name": "Meta-ExternalAgent" },
+    { "token": "Amazonbot", "name": "Amazonbot" },
+    { "token": "DuckAssistBot", "name": "DuckAssistBot" },
+    { "token": "MistralAI-User", "name": "MistralAI-User" }
+  ]
+}
