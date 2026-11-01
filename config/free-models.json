@@ -67,12 +67,7 @@
     "nvidia/nemotron-3-super-120b-a12b:free": "HTTP 404 on 2026-11-01 (delisted)",
     "thinkingmachines/inkling:free": "403 'only available on agentic harnesses'"
   },
-  "github_models": [
-    "openai/gpt-4.1-mini",
-    "openai/gpt-4o-mini",
-    "meta/llama-3.3-70b-instruct"
-  ],
-  "github_models_note": "GitHub Models free tier through the Actions GITHUB_TOKEN (caller grants permissions: models: read). Paid usage is opt-in in GitHub billing and is never enabled; a 429 is the free limit, not a bill.",
+  "github_models_retired": "GitHub Models was retired by GitHub on 2026-07-30; models.github.ai answers every request with HTTP 200 text/plain OK. Lane removed in v1.2.2.",
   "gemini_models": [
     "gemini-2.5-flash-lite",
     "gemini-2.5-flash"

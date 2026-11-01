@@ -241,7 +241,8 @@ test('free route is $0 only', () => {
   assert.ok(r.models.length >= 1);
   assert.ok(r.models.every((m) => m.endsWith(':free')));
   assert.ok(!r.models.includes('nvidia/nemotron-3-super-120b-a12b:free'), 'dead ids never routed');
-  assert.ok(r.github.length >= 1 && r.workers.daily_neuron_cap <= 1000);
+  assert.ok(r.gemini.length >= 1 && r.workers.daily_neuron_cap <= 600, 'Workers AI keeps the 600-neuron daily cap');
+  assert.equal(r.github, undefined, 'GitHub Models (retired 2026-07-30) is not routed');
   assert.equal(MODE_RULES.off.build, false);
 });
 
@@ -287,31 +288,34 @@ test('a model that never answers leaves the search queued (not dropped); BUILD w
   assert.ok(r.did.build.model_failed >= 1);
 });
 
-test('free lanes: GitHub Models -> OpenRouter -> metered Workers AI, backoff across lanes, $0 only', async () => {
+test('free lanes: Gemini -> OpenRouter -> metered Workers AI, backoff across lanes, $0 only', async () => {
   const { freeChat, resetLanes, laneState, worstNeurons } = await import('../src/llm.mjs');
   const cfg = { root: '.', llm: {} };
   const msgs = [{ role: 'user', content: 'x'.repeat(3000) }];
   const J = (status, body, h = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...h } });
-  const env = (o) => { for (const k of ['GITHUB_MODELS_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN']) { if (o[k] === undefined) delete process.env[k]; else process.env[k] = o[k]; } };
+  const env = (o) => { for (const k of ['GEMINI_API_KEY', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN']) { if (o[k] === undefined) delete process.env[k]; else process.env[k] = o[k]; } };
   const noSleep = async () => {};
 
-  // 1. GitHub Models answers first.
-  resetLanes(); env({ GITHUB_MODELS_TOKEN: 't' });
-  let r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: noSleep, fetchImpl: async (u) => (String(u).includes('models.github.ai') ? J(200, { choices: [{ message: { content: 'gh answer' } }] }) : J(500, {})) });
-  assert.equal(r.ok, true); assert.match(r.model, /^github:/);
+  // 1. Gemini answers first; the retired GitHub Models endpoint is never asked.
+  resetLanes(); env({ GEMINI_API_KEY: 'g' });
+  const asked1 = [];
+  let r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: noSleep, fetchImpl: async (u) => { asked1.push(String(u)); return String(u).includes('generativelanguage') ? J(200, { choices: [{ message: { content: 'gemini answer' } }] }) : J(500, {}); } });
+  assert.equal(r.ok, true); assert.match(r.model, /^gemini:/);
+  assert.equal(asked1.filter((u) => u.includes('models.github.ai')).length, 0, 'GitHub Models (retired 2026-07-30) is not a lane');
 
-  // 2. GitHub 429 (daily: retry-after > 1h) -> OpenRouter daily quota -> Workers AI within its metered share.
-  resetLanes(); env({ GITHUB_MODELS_TOKEN: 't', CLOUDFLARE_ACCOUNT_ID: 'a', CLOUDFLARE_API_TOKEN: 'c' });
+  // 2. Gemini daily 429 on both models -> OpenRouter daily quota -> Workers AI within its metered share.
+  resetLanes(); env({ GEMINI_API_KEY: 'g', CLOUDFLARE_ACCOUNT_ID: 'a', CLOUDFLARE_API_TOKEN: 'c' });
   const calls = [];
   r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: noSleep, fetchImpl: async (u, init) => {
     const s = String(u); calls.push(s);
-    if (s.includes('models.github.ai')) return J(429, {}, { 'retry-after': '86400' });
+    if (s.includes('generativelanguage')) return J(429, [{ error: { message: 'Quota exceeded: GenerateRequestsPerDayPerProjectPerModel-FreeTier' } }]);
     if (s.includes('openrouter.ai')) return J(429, { error: { message: 'Rate limit exceeded: free-models-per-day' } });
     if (s.endsWith('/graphql')) return J(200, { data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 100 }, dimensions: { modelId: '@cf/google/gemma-3-12b-it' } }, { sum: { totalNeurons: 5000 }, dimensions: { modelId: '@cf/mistralai/mistral-small-3.1-24b-instruct' } }] }] } } });
     if (s.includes('/ai/run/')) return J(200, { result: { response: 'workers answer' } });
     return J(500, {});
   } });
   assert.equal(r.ok, true); assert.match(r.model, /^workers:/);
+  assert.match(laneState.closed.gemini, /daily quota/);
   assert.match(laneState.closed.openrouter, /free-models-per-day/);
   assert.equal(calls.filter((c) => c.includes('openrouter.ai')).length, 1, 'a used-up daily quota closes the lane at once');
 
@@ -326,19 +330,28 @@ test('free lanes: GitHub Models -> OpenRouter -> metered Workers AI, backoff acr
   assert.ok(worstNeurons({ neurons_per_m_input: 31400, neurons_per_m_output: 50600 }, msgs, 3500) > 177);
 
   // 4. Per-minute 429 everywhere -> back off, then succeed on the next round.
-  resetLanes(); env({ GITHUB_MODELS_TOKEN: 't' });
+  resetLanes(); env({ GEMINI_API_KEY: 'g' });
   let n = 0; const waits = [];
-  r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: async (ms) => waits.push(ms), fetchImpl: async (u) => { if (String(u).includes('models.github.ai')) { n++; return n <= 3 ? J(429, {}, { 'retry-after': '20' }) : J(200, { choices: [{ message: { content: 'after backoff' } }] }); } return J(429, {}, { 'retry-after': '20' }); } });
+  r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: async (ms) => waits.push(ms), fetchImpl: async (u) => { if (String(u).includes('generativelanguage')) { n++; return n <= 3 ? J(429, {}, { 'retry-after': '20' }) : J(200, { choices: [{ message: { content: 'after backoff' } }] }); } return J(429, {}, { 'retry-after': '20' }); } });
   assert.equal(r.ok, true); assert.ok(waits.length >= 1, 'backed off before retrying');
 
   // 5. Every lane out -> NO_FREE_MODEL, rate-limited (BUILD drops to slow and requeues).
-  resetLanes(); env({ GITHUB_MODELS_TOKEN: 't' });
+  resetLanes(); env({ GEMINI_API_KEY: 'g' });
   r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: noSleep, fetchImpl: async () => J(429, { error: { message: 'free-models-per-day' } }, { 'retry-after': '90000' }) });
   assert.equal(r.ok, false); assert.equal(r.stop, 'NO_FREE_MODEL'); assert.equal(r.rateLimited, true);
 
   // 6. A non-zero cost fails loud.
   resetLanes(); env({});
   await assert.rejects(freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: noSleep, fetchImpl: async () => J(200, { usage: { cost: 0.01 }, choices: [{ message: { content: 'x' } }] }) }), /FAIL_LOUD/);
+
+  // 7. A dead endpoint answering HTTP 200 text/plain "OK" (what models.github.ai does since its
+  //    retirement) closes that lane after ONE request, and the next lane answers.
+  resetLanes(); env({ GEMINI_API_KEY: 'g' });
+  const asked7 = [];
+  r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: noSleep, fetchImpl: async (u) => { asked7.push(String(u)); return String(u).includes('generativelanguage') ? new Response('OK\r\n', { status: 200, headers: { 'content-type': 'text/plain' } }) : J(200, { choices: [{ message: { content: 'openrouter answer' } }] }); } });
+  assert.equal(r.ok, true); assert.ok(!/^gemini:/.test(r.model), `answered by ${r.model}`);
+  assert.equal(asked7.filter((u) => u.includes('generativelanguage')).length, 1, 'a non-JSON 200 closes the lane after one request');
+  assert.match(laneState.closed.gemini, /HTTP 200 with no JSON \(text\/plain "OK/);
   env({});
 });
 
@@ -358,7 +371,7 @@ test('a free model that never answers cannot hang the run: request timeout, call
   // Every lane hangs until the request is aborted (a stuck socket).
   let calls = 0; const asked = [];
   const hang = (u, init) => { calls++; asked.push(JSON.parse(init.body).model); return new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted')))); };
-  process.env.GITHUB_MODELS_TOKEN = 'gh';
+  process.env.GEMINI_API_KEY = 'gm';
   try {
     resetLanes(); startClock({});
     const t0 = Date.now();
@@ -366,7 +379,7 @@ test('a free model that never answers cannot hang the run: request timeout, call
     assert.equal(r.ok, false);
     assert.equal(r.stop, 'NO_FREE_MODEL');
     const route = loadRouting(cfg);
-    assert.ok(asked.length < route.github.length + route.models.length, `the call budget stopped the chain (${asked.length} models asked)`);
+    assert.ok(asked.length < route.gemini.length + route.models.length, `the call budget stopped the chain (${asked.length} models asked)`);
     assert.ok(Date.now() - t0 < 1000, `freeChat returned in ${Date.now() - t0}ms`);
     assert.ok(Object.keys(laneState.slow).length >= 1, 'a model that timed out is marked slow');
     assert.match(r.reason, /timed out/);
@@ -379,5 +392,5 @@ test('a free model that never answers cannot hang the run: request timeout, call
     r = await freeChat({ cfg, messages: msgs, apiKey: 'k', fetchImpl: hang, timeoutMs: 50, callMs: 400 });
     assert.equal(r.stop, 'MODEL_TIME_BUDGET');
     assert.equal(calls, n, 'no request after the budget');
-  } finally { delete process.env.GITHUB_MODELS_TOKEN; startClock({}); resetLanes(); }
+  } finally { delete process.env.GEMINI_API_KEY; startClock({}); resetLanes(); }
 });

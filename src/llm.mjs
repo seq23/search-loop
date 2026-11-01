@@ -1,14 +1,16 @@
-// The free model lanes. $0 only, four lanes tried in order, with backoff
+// The free model lanes. $0 only, three lanes tried in order, with backoff
 // across lanes before giving up:
-//   1. GitHub Models   — free tier through the run's own GITHUB_TOKEN (caller grants
-//                         `models: read`); paid usage is opt-in on GitHub, never enabled here.
-//   2. Gemini API      — free tier only (GEMINI_API_KEY from a project with no billing).
-//   3. OpenRouter      — ":free" models priced 0/0 only; a response reporting
+//   1. Gemini API      — free tier only (GEMINI_API_KEY from a project with no billing).
+//   2. OpenRouter      — ":free" models priced 0/0 only; a response reporting
 //                         usage.cost > 0 throws. Daily free quota exhaustion closes the lane.
-//   4. Workers AI      — only inside a metered share of the account's free 10,000 daily
+//   3. Workers AI      — only inside a metered share of the account's free 10,000 daily
 //                         neurons that the studios (8,500) do not hold: the engine's own model's
 //                         usage today is read from Cloudflare analytics BEFORE each call and the
 //                         lane closes if it cannot be read (fail closed: overage is billed).
+// GitHub Models was retired by GitHub on 30 Jul 2026: models.github.ai now answers
+// every request with HTTP 200 text/plain "OK", so that lane is gone (v1.2.2).
+// A 200 that is not a JSON answer closes its lane for the run (a dead or replaced
+// endpoint costs one request per run, never one per model per page).
 // No paid lane exists. When every lane is out: NO_FREE_MODEL, and the search stays queued.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,7 +31,7 @@ export function loadRouting(cfg) {
   // The site's own roster first, then the engine's (deduped): more free models, same $0 rule.
   const dead = new Set(Object.keys(engine.excluded_models || {}).filter((k) => !k.startsWith('_')));
   const ids = [...new Set([...models.map((m) => m.id), ...(engine.free_models || []).map((m) => m.id)])].filter((id) => id.endsWith(':free') && !dead.has(id));
-  return { file, endpoint: r.policy.endpoint || 'https://openrouter.ai/api/v1/chat/completions', models: ids, github: engine.github_models || [], gemini: engine.gemini_models || [], workers: engine.workers_ai || null };
+  return { file, endpoint: r.policy.endpoint || 'https://openrouter.ai/api/v1/chat/completions', models: ids, gemini: engine.gemini_models || [], workers: engine.workers_ai || null };
 }
 
 // Per-run lane state, so a lane whose DAILY quota is gone is not re-tried for every page.
@@ -67,28 +69,16 @@ function failed(lane, model, r, attempts) {
   attempts.push({ lane, model, status: r.timedOut ? 'timeout' : 'error' });
   progress('model', `${lane} ${model}: ${r.error}`);
 }
+// A 200 whose body is not JSON is not a model answer: the endpoint is dead or replaced.
+function notAnAnswer(lane, model, r, attempts) {
+  if (!r.res?.ok || !r.payload?._raw) return false;
+  laneState.closed[lane] = `endpoint answered HTTP 200 with no JSON (${r.payload._raw}); closed for the run`;
+  attempts.push({ lane, model, status: `non-JSON 200 ${r.payload._raw}` });
+  return true;
+}
 const retryAfter = (res) => { const n = Number(res?.headers?.get?.('retry-after')); return Number.isFinite(n) ? n : null; };
 
-// --- lane 1: GitHub Models --------------------------------------------------
-async function githubLane({ route, messages, maxTokens, fetchImpl, timeoutMs, attempts, deadline, clock }) {
-  const token = process.env.GITHUB_MODELS_TOKEN;
-  if (!token) { laneState.closed.github = 'not read: no GITHUB_MODELS_TOKEN (the caller must grant permissions: models: read)'; return { next: true }; }
-  let soonest = null;
-  for (const model of route.github) {
-    const ms = turn('github', model, { deadline, clock, timeoutMs }); if (ms == null) continue;
-    const r = await post(fetchImpl, 'https://models.github.ai/inference/chat/completions', { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' }, { model, messages, max_tokens: Math.min(maxTokens, 4000), temperature: 0.4 }, ms);
-    if (r.error) { failed('github', model, r, attempts); continue; }
-    const { res, payload } = r;
-    if (res.status === 401 || res.status === 403) { laneState.closed.github = `GitHub Models refused the token (HTTP ${res.status}); the caller needs permissions: models: read`; attempts.push({ lane: 'github', model, status: `http_${res.status}` }); return { next: true }; }
-    if (res.status === 429) { attempts.push({ lane: 'github', model, status: 'http_429' }); const ra = retryAfter(res); if (ra != null && ra > 3600) continue; soonest = Math.min(soonest ?? Infinity, ra ?? 60); continue; }
-    const answer = payload?.choices?.[0]?.message?.content || '';
-    if (!res.ok || !answer.trim()) { attempts.push({ lane: 'github', model, status: (res.ok ? 'empty' : `http_${res.status}`) + (payload?._raw ? ` non-JSON ${payload._raw}` : '') }); continue; }
-    return { ok: true, answer, model: `github:${model}` };
-  }
-  return { retryIn: soonest };
-}
-
-// --- lane 2: Gemini API free tier ------------------------------------------------
+// --- lane 1: Gemini API free tier ------------------------------------------------
 // Only with GEMINI_API_KEY from a Google AI Studio project with no billing account
 // (free tier cannot be charged). Daily quota gone -> lane closed for the run.
 async function geminiLane({ route, messages, maxTokens, fetchImpl, timeoutMs, attempts, deadline, clock }) {
@@ -99,6 +89,7 @@ async function geminiLane({ route, messages, maxTokens, fetchImpl, timeoutMs, at
     const ms = turn('gemini', model, { deadline, clock, timeoutMs }); if (ms == null) continue;
     const r = await post(fetchImpl, 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', { authorization: `Bearer ${key}` }, { model, messages, max_tokens: Math.min(maxTokens, 8000), temperature: 0.4, reasoning_effort: 'none' }, ms);
     if (r.error) { failed('gemini', model, r, attempts); continue; }
+    if (notAnAnswer('gemini', model, r, attempts)) return { next: true };
     const { res, payload } = r;
     const body = JSON.stringify(payload?.error || payload?.[0]?.error || '');
     if (res.status === 401 || res.status === 403 || (res.status === 400 && /API key/i.test(body))) { laneState.closed.gemini = `Gemini refused the key (HTTP ${res.status})`; attempts.push({ lane: 'gemini', model, status: `http_${res.status}` }); return { next: true }; }
@@ -116,7 +107,7 @@ async function geminiLane({ route, messages, maxTokens, fetchImpl, timeoutMs, at
   return { retryIn: soonest };
 }
 
-// --- lane 3: OpenRouter :free -------------------------------------------------
+// --- lane 2: OpenRouter :free -------------------------------------------------
 async function openrouterLane({ route, messages, maxTokens, fetchImpl, timeoutMs, attempts, apiKey, deadline, clock }) {
   if (!apiKey) { laneState.closed.openrouter = 'not read: OPENROUTER_API_KEY is not set'; return { next: true }; }
   let soonest = null;
@@ -124,6 +115,7 @@ async function openrouterLane({ route, messages, maxTokens, fetchImpl, timeoutMs
     const ms = turn('openrouter', model, { deadline, clock, timeoutMs }); if (ms == null) continue;
     const r = await post(fetchImpl, route.endpoint, { authorization: `Bearer ${apiKey}` }, { model, messages, temperature: 0.4, max_tokens: maxTokens + 2048, reasoning: { effort: 'low', exclude: true }, usage: { include: true }, provider: { allow_fallbacks: false } }, ms);
     if (r.error) { failed('openrouter', model, r, attempts); continue; }
+    if (notAnAnswer('openrouter', model, r, attempts)) return { next: true };
     const { res, payload } = r;
     if (res.status === 401 || res.status === 402 || res.status === 403) { laneState.closed.openrouter = `OpenRouter refused the key (HTTP ${res.status})`; attempts.push({ lane: 'openrouter', model, status: `http_${res.status}` }); return { next: true, keyRefused: true }; }
     const cost = payload?.usage?.cost;
@@ -143,7 +135,7 @@ async function openrouterLane({ route, messages, maxTokens, fetchImpl, timeoutMs
   return { retryIn: soonest };
 }
 
-// --- lane 4: Workers AI, metered ------------------------------------------------
+// --- lane 3: Workers AI, metered ------------------------------------------------
 export function worstNeurons(w, messages, maxTokens) {
   const chars = messages.reduce((n, m) => n + String(m.content || '').length, 0);
   return Math.ceil((chars / 3) * w.neurons_per_m_input / 1e6 + maxTokens * w.neurons_per_m_output / 1e6);
@@ -176,13 +168,14 @@ async function workersLane({ route, messages, maxTokens, fetchImpl, timeoutMs, a
   const r = await post(fetchImpl, `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/${w.model}`, { authorization: `Bearer ${token}` }, { messages, max_tokens: tokens, temperature: 0.4 }, ms);
   laneState.workersNeurons = mine + worst;
   if (r.error) { failed('workers', w.model, r, attempts); return {}; }
+  if (notAnAnswer('workers', w.model, r, attempts)) return { next: true };
   const answer = r.payload?.result?.response || '';
   if (r.res.status === 401 || r.res.status === 403) { laneState.closed.workers = `Workers AI refused the token (HTTP ${r.res.status})`; return { next: true }; }
   if (!r.res.ok || !String(answer).trim()) { attempts.push({ lane: 'workers', model: w.model, status: r.res.ok ? 'empty' : `http_${r.res.status}` }); return {}; }
   return { ok: true, answer: typeof answer === 'string' ? answer : JSON.stringify(answer), model: `workers:${w.model}` };
 }
 
-export const LANES = [['github', githubLane], ['gemini', geminiLane], ['openrouter', openrouterLane], ['workers', workersLane]];
+export const LANES = [['gemini', geminiLane], ['openrouter', openrouterLane], ['workers', workersLane]];
 export const BACKOFF = { rounds: 3, maxWaitS: 120, budgetS: 360 };
 
 // Returns { ok, answer, model } or { ok:false, stop, rateLimited, reason, attempts }.
@@ -215,8 +208,8 @@ export async function freeChat({ cfg, messages, maxTokens = 3500, apiKey = proce
     waited += wait;
   }
   const closed = [...Object.entries(laneState.closed).map(([k, v]) => `${k}: ${v}`), ...Object.entries(laneState.slow).map(([k, v]) => `${k}: ${v} (skipped this run)`)];
-  const allKeysMissing = !process.env.GITHUB_MODELS_TOKEN && !process.env.GEMINI_API_KEY && !apiKey && !(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN);
-  if (allKeysMissing) return { ok: false, stop: 'FREE_MODEL_KEY_MISSING', reason: 'no free model lane has a credential (GITHUB_MODELS_TOKEN, GEMINI_API_KEY, OPENROUTER_API_KEY, CLOUDFLARE_*)', attempts };
+  const allKeysMissing = !process.env.GEMINI_API_KEY && !apiKey && !(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN);
+  if (allKeysMissing) return { ok: false, stop: 'FREE_MODEL_KEY_MISSING', reason: 'no free model lane has a credential (GEMINI_API_KEY, OPENROUTER_API_KEY, CLOUDFLARE_*)', attempts };
   const limited = attempts.filter((a) => /429|quota|backoff/.test(a.status)).length;
   return { ok: false, stop: 'NO_FREE_MODEL', rateLimited: limited > 0 || Object.values(laneState.closed).some((v) => /quota|share/.test(v)), reason: `every free lane is out — ${closed.join('; ') || 'no lane answered'} (${attempts.slice(-6).map((a) => `${a.lane}:${String(a.model || '').split('/').pop()}:${a.status}`).join(', ')})`, attempts };
 }

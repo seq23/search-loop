@@ -32,15 +32,15 @@ Her search-readiness checklist (boss-os `src/shared/boss/searchReadiness/checkli
 
 ## The free model lanes ($0 only)
 
-Every site shares the same free capacity, so the engine spreads the load over four lanes and never pays:
+Every site shares the same free capacity, so the engine spreads the load over three lanes and never pays:
 
 | Order | Lane | Credential | How it stays $0 | When it closes for the run |
 |---|---|---|---|---|
-| 1 | **GitHub Models** (`openai/gpt-4.1-mini`, `openai/gpt-4o-mini`, `meta/llama-3.3-70b-instruct`) | the run's own `GITHUB_TOKEN` — caller grants `permissions: models: read` | free tier; paid usage is opt-in on GitHub and never enabled | 401/403 (no permission), daily 429 |
-| 2 | **Gemini API free tier** (`gemini-2.5-flash-lite`, `gemini-2.5-flash`) | `GEMINI_API_KEY` (caller passes it in `secrets:`) | key from a Google AI Studio project with **no billing account** — the free tier cannot be charged | key refused; a model's daily quota closes that model, both → lane closed |
-| 3 | **OpenRouter `:free`** (site roster + engine roster, dead ids excluded) | `OPENROUTER_API_KEY` | only `:free` models priced 0/0; a non-zero `usage.cost` fails loud | key refused, `free-models-per-day` used up |
-| 4 | **Cloudflare Workers AI** (`@cf/google/gemma-3-12b-it`) | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | metered: reads today's usage from Cloudflare analytics before every call; stops at 600 neurons/day of its own model and when the whole account passes 9,000 of the free 10,000 (studios hold 8,500); **fails closed** if usage cannot be read | share used, usage unreadable |
+| 1 | **Gemini API free tier** (`gemini-2.5-flash-lite`, `gemini-2.5-flash`) | `GEMINI_API_KEY` (caller passes it in `secrets:`) | key from a Google AI Studio project with **no billing account** — the free tier cannot be charged | key refused; a model's daily quota closes that model, both → lane closed |
+| 2 | **OpenRouter `:free`** (site roster + engine roster, dead ids excluded) | `OPENROUTER_API_KEY` | only `:free` models priced 0/0; a non-zero `usage.cost` fails loud | key refused, `free-models-per-day` used up |
+| 3 | **Cloudflare Workers AI** (`@cf/google/gemma-3-12b-it`) | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | metered: reads today's usage from Cloudflare analytics before every call; stops at 600 neurons/day of its own model and when the whole account passes 9,000 of the free 10,000 (studios hold 8,500); **fails closed** if usage cannot be read | share used, usage unreadable |
 
+- GitHub Models was retired by GitHub on 30 Jul 2026 and is no longer a lane (v1.2.2). Any lane whose endpoint answers HTTP 200 without JSON is closed for the run.
 - Per-minute 429s back off (up to 3 rounds, ≤ 6 minutes of waiting) and retry across lanes before giving up.
 - **Time limits (never a hang):** each model request 60 s; each model call (all lanes, models and backoff) 4 min; a model that times out is skipped for the rest of the run. Every other request (sources, Search Console, Cloudflare, IndexNow, autocomplete) has a timeout and at most one retry. The run has a **soft budget** of 35 min after the stagger (`SEARCH_LOOP_SOFT_MINUTES`): nothing new starts after it, the run writes its report and commits what it has (`NAMED NOTE [RUN_TIME_BUDGET]`, searches stay queued). A **watchdog** at 55 min (`SEARCH_LOOP_HARD_MINUTES`) ends a stuck run with `NAMED STOP [RUN_HUNG]` naming the stage; the job itself times out at 100 min. `progress +Nm <stage>` lines show where time goes.
 - When every lane is out: the run drops to `slow` for the day (`NAMED NOTE [FREE_MODEL_RATE_LIMITED]`), the search stays queued for the next run (never dropped), and the report names each closed lane. If BUILD then published nothing, the run ends with **`NAMED STOP [NO_FREE_MODEL]`** (exit 2: the report, checks and ledger still commit) — never a silent 0.
@@ -93,7 +93,6 @@ on:
 permissions:
   contents: write
   actions: write
-  models: read      # the GitHub Models free lane
 concurrency:
   group: search-loop
   cancel-in-progress: false
