@@ -13,6 +13,7 @@ import { currentPace } from './pace.mjs';
 import { isProtected } from './config.mjs';
 
 export const DROP_RETRY_DAYS = 28;
+export const MAX_ATTEMPTS = 3; // one draft + two fix passes, then drop
 
 export function menuRoutes(cfg) {
   if (Array.isArray(cfg.menu_pages)) return new Set(cfg.menu_pages);
@@ -55,6 +56,14 @@ Return JSON with exactly these keys:
 If this search does not fit the audience or the site (a different meaning of the words, someone else's brand), return {"skip":"why"} instead.
 Hard rules: no statistics, percentages or "studies show" anywhere except inside "facts"; no named people, quotes, doctors, credentials, reviews, testimonials or star ratings; no promises of outcomes${cfg.health_gate !== 'none' ? '; no treatment or outcome claims, never "painless", no medical advice, no hours or services beyond the real facts' : ''}; no filler; second person, short sentences.${problems ? `\n\nYour previous draft failed these checks; fix every one:\n- ${problems.join('\n- ')}` : ''}` },
   ];
+}
+
+// A meta description over 160 characters is cut at a word boundary (never padded).
+export function fitMeta(m) {
+  const s = String(m || '').trim();
+  if (s.length <= LIMITS.meta[1]) return s;
+  const cut = s.slice(0, LIMITS.meta[1] - 1).replace(/\s+\S*$/, '').replace(/[,;:\s]+$/, '');
+  return cut.length >= LIMITS.meta[0] ? cut + '.' : s;
 }
 
 export function cleanDraft(d) {
@@ -109,7 +118,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     if (fs.existsSync(path.join(cfg.root, rel)) || isProtected(cfg, rel)) { book.dropped.push({ query: target.query, at: today, reason: 'path exists or is protected' }); result.dropped++; continue; }
     const related = pickRelated(cfg, index, target.query, { n: 3 });
     let problems = null; let html = null; let draft = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const r = await chat({ cfg, messages: draftPrompt(cfg, target, related, problems), fetchImpl });
       if (!r.ok) {
         if (r.stop === 'FREE_MODEL_KEY_MISSING' || r.stop === 'FREE_MODEL_KEY_REFUSED') { notes.push(`NAMED STOP [${r.stop}] ${r.reason}; BUILD wrote nothing, CHECK and the report still run`); result.stopped = r.stop; return finish(); }
@@ -129,6 +138,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
       if (parsed?.skip) { problems = [`off-audience: ${String(parsed.skip).slice(0, 120)}`]; html = null; break; }
       draft = cleanDraft(parsed);
       if (!draft) { problems = ['the answer was not the JSON object asked for, with every key filled']; continue; }
+      draft.meta_description = fitMeta(draft.meta_description);
       draft.facts = await verifyFacts(draft.facts, fetchImpl);
       html = render(cfg, { slug, draft, related: related.map((p) => ({ route: p.route, anchor: p.h1 || p.title })), published: today });
       problems = gate({ query: target.query, html, facts: draft.facts }, { cfg, corpus: index, siblings, selfRoute: route });

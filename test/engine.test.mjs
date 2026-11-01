@@ -262,3 +262,11 @@ test('a draft the model marks off-audience is dropped with the reason', async ()
   const book = JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pages.json')));
   assert.match(JSON.stringify(book.dropped), /off-audience/);
 });
+
+test('meta descriptions over 160 characters are cut at a word boundary, never padded', async () => {
+  const { fitMeta } = await import('../src/build.mjs');
+  const long = 'Plan your week by choosing three outcomes, blocking time for each one on the calendar, and reviewing honestly on Friday afternoon so that next week starts from the truth.';
+  const m = fitMeta(long);
+  assert.ok(m.length >= 120 && m.length <= 160, String(m.length));
+  assert.equal(fitMeta('short one'), 'short one');
+});
