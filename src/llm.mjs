@@ -155,9 +155,14 @@ export async function workersUsedToday({ w, fetchImpl, account, token, now = new
 
 async function workersLane({ route, messages, maxTokens, fetchImpl, timeoutMs, attempts, now, deadline, clock }) {
   const w = route.workers;
+  // Two tokens: CLOUDFLARE_API_TOKEN reads today's usage (Account Analytics), and
+  // CLOUDFLARE_WORKERS_AI_TOKEN runs the model (Workers AI). A token scoped to Workers AI
+  // alone cannot read analytics, so one token often cannot do both; the run token falls
+  // back to CLOUDFLARE_API_TOKEN when one token holds both scopes.
   const account = process.env.CLOUDFLARE_ACCOUNT_ID; const token = process.env.CLOUDFLARE_API_TOKEN;
+  const runToken = process.env.CLOUDFLARE_WORKERS_AI_TOKEN || token;
   if (!w) { laneState.closed.workers = 'not configured'; return { next: true }; }
-  if (!account || !token) { laneState.closed.workers = 'not read: CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN not passed'; return { next: true }; }
+  if (!account || !token) { laneState.closed.workers = 'not read: CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN (usage read) not passed'; return { next: true }; }
   const tokens = Math.min(maxTokens, w.max_output_tokens);
   const worst = worstNeurons(w, messages, tokens);
   const used = await workersUsedToday({ w, fetchImpl, account, token, now });
@@ -165,13 +170,18 @@ async function workersLane({ route, messages, maxTokens, fetchImpl, timeoutMs, a
   const mine = Math.max(used.mine, laneState.workersNeurons);
   if (mine + worst > w.daily_neuron_cap || used.all + worst > w.account_ceiling) { laneState.closed.workers = `engine share of Workers AI used today (${mine}/${w.daily_neuron_cap} neurons; account ${used.all}/${w.account_ceiling})`; return { next: true }; }
   const ms = turn('workers', w.model, { deadline, clock, timeoutMs }); if (ms == null) return {};
-  const r = await post(fetchImpl, `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/${w.model}`, { authorization: `Bearer ${token}` }, { messages, max_tokens: tokens, temperature: 0.4 }, ms);
+  const r = await post(fetchImpl, `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/${w.model}`, { authorization: `Bearer ${runToken}` }, { messages, max_tokens: tokens, temperature: 0.4, ...(w.extra_body || {}) }, ms);
   laneState.workersNeurons = mine + worst;
   if (r.error) { failed('workers', w.model, r, attempts); return {}; }
   if (notAnAnswer('workers', w.model, r, attempts)) return { next: true };
-  const answer = r.payload?.result?.response || '';
+  // Older models answer { result: { response } }; newer ones answer OpenAI-shaped { result: { choices } }.
+  const answer = r.payload?.result?.response || r.payload?.result?.choices?.[0]?.message?.content || '';
   if (r.res.status === 401 || r.res.status === 403) { laneState.closed.workers = `Workers AI refused the token (HTTP ${r.res.status})`; return { next: true }; }
-  if (!r.res.ok || !String(answer).trim()) { attempts.push({ lane: 'workers', model: w.model, status: r.res.ok ? 'empty' : `http_${r.res.status}` }); return {}; }
+  if (!r.res.ok || !String(answer).trim()) {
+    const why = String(r.payload?.errors?.[0]?.message || '').slice(0, 100);
+    if (/not allowed to access|No such model|model.*not found/i.test(why)) { laneState.closed.workers = `Workers AI refused ${w.model}: ${why}`; attempts.push({ lane: 'workers', model: w.model, status: 'model refused' }); return { next: true }; }
+    attempts.push({ lane: 'workers', model: w.model, status: (r.res.ok ? 'empty' : `http_${r.res.status}`) + (why ? ` ${why}` : '') }); return {};
+  }
   return { ok: true, answer: typeof answer === 'string' ? answer : JSON.stringify(answer), model: `workers:${w.model}` };
 }
 

@@ -52,6 +52,8 @@ on:
         required: false
       CLOUDFLARE_ACCOUNT_ID:
         required: false
+      CLOUDFLARE_WORKERS_AI_TOKEN:
+        required: false
       GEMINI_API_KEY:
         required: false
       INDEXNOW_KEY:
@@ -78,6 +80,7 @@ jobs:
       BING_WEBMASTER_API_KEY: ${{ secrets.BING_WEBMASTER_API_KEY }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}
       NODE_OPTIONS: ${{ inputs.node_options }}
