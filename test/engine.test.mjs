@@ -345,3 +345,35 @@ test('stagger spreads sites across 0-39 minutes, deterministically', async () =>
   assert.ok(new Set(s).size >= 4);
   assert.equal(staggerMinutes('a.com'), staggerMinutes('a.com'));
 });
+
+test('a free model that never answers cannot hang the run: request timeout, call budget, run budget', { timeout: 10000 }, async () => {
+  const { freeChat, resetLanes, laneState, loadRouting } = await import('../src/llm.mjs');
+  const { runClock, startClock } = await import('../src/util.mjs');
+  const cfg = { root: process.cwd() };
+  const msgs = [{ role: 'user', content: 'x' }];
+  // Every lane hangs until the request is aborted (a stuck socket).
+  let calls = 0; const asked = [];
+  const hang = (u, init) => { calls++; asked.push(JSON.parse(init.body).model); return new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted')))); };
+  process.env.GITHUB_MODELS_TOKEN = 'gh';
+  try {
+    resetLanes(); startClock({});
+    const t0 = Date.now();
+    let r = await freeChat({ cfg, messages: msgs, apiKey: 'k', fetchImpl: hang, sleepImpl: async () => {}, timeoutMs: 100, callMs: 250 });
+    assert.equal(r.ok, false);
+    assert.equal(r.stop, 'NO_FREE_MODEL');
+    const route = loadRouting(cfg);
+    assert.ok(asked.length < route.github.length + route.models.length, `the call budget stopped the chain (${asked.length} models asked)`);
+    assert.ok(Date.now() - t0 < 1000, `freeChat returned in ${Date.now() - t0}ms`);
+    assert.ok(Object.keys(laneState.slow).length >= 1, 'a model that timed out is marked slow');
+    assert.match(r.reason, /timed out/);
+    // The slow models are skipped for the rest of the run: the next call does not re-wait on them.
+    r = await freeChat({ cfg, messages: msgs, apiKey: 'k', fetchImpl: hang, sleepImpl: async () => {}, timeoutMs: 100, callMs: 250 });
+    assert.equal(new Set(asked).size, asked.length, `no model asked twice in one run: ${asked.join(', ')}`);
+    // Past the run's soft budget no model call starts at all.
+    resetLanes(); runClock.softAt = Date.now() - 1;
+    const n = calls;
+    r = await freeChat({ cfg, messages: msgs, apiKey: 'k', fetchImpl: hang, timeoutMs: 50, callMs: 400 });
+    assert.equal(r.stop, 'MODEL_TIME_BUDGET');
+    assert.equal(calls, n, 'no request after the budget');
+  } finally { delete process.env.GITHUB_MODELS_TOKEN; startClock({}); resetLanes(); }
+});

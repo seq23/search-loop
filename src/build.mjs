@@ -7,7 +7,7 @@ import { buildIndex } from './site-index.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
 import { render, pageRel, pageUrl, withRelatedLink } from './render.mjs';
 import { gate, LIMITS } from './gate.mjs';
-import { centralDate, slugify, tokenOverlap, shingles, stripTags, sha256, fetchText, daysBetween } from './util.mjs';
+import { centralDate, slugify, tokenOverlap, shingles, stripTags, sha256, fetchText, daysBetween, pastSoft, progress } from './util.mjs';
 import { intentKey as keyOf } from './find.mjs';
 import { currentPace } from './pace.mjs';
 import { isProtected } from './config.mjs';
@@ -111,7 +111,9 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
   let failsInRow = 0;
   for (const target of queue) {
     if (result.published >= result.quota || result.attempted >= result.quota * 2 + 2) break;
+    if (pastSoft()) { notes.push(`NAMED NOTE [RUN_TIME_BUDGET] BUILD stopped at the run's time budget after ${result.attempted} search(es); the rest stay queued for the next run`); break; }
     result.attempted++;
+    progress('build', `page ${result.attempted} (quota ${result.quota}): "${target.query}"`);
     const slug = slugify(target.query);
     const rel = pageRel(cfg, slug);
     const route = cfg.output.url_prefix + slug + (cfg.output.format === 'dir-index' ? '/' : '');
@@ -121,6 +123,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const r = await chat({ cfg, messages: draftPrompt(cfg, target, related, problems), fetchImpl });
       if (!r.ok) {
+        if (r.stop === 'MODEL_TIME_BUDGET') { result.model_failed = (result.model_failed || 0) + 1; notes.push(`NAMED NOTE [RUN_TIME_BUDGET] ${r.reason}`); return finish(); }
         if (r.stop === 'FREE_MODEL_KEY_MISSING' || r.stop === 'FREE_MODEL_KEY_REFUSED') { notes.push(`NAMED STOP [${r.stop}] ${r.reason}; BUILD wrote nothing, CHECK and the report still run`); result.stopped = r.stop; return finish(); }
         failsInRow++;
         if (r.rateLimited || r.stop === 'NO_FREE_MODEL') {

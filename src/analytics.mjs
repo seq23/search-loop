@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fetchJson } from './util.mjs';
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const AI_REFERRERS = JSON.parse(fs.readFileSync(path.join(ENGINE_ROOT, 'config', 'ai_referrers.json'), 'utf8'));
@@ -26,13 +27,13 @@ export function botFor(ua) {
 const CF = 'https://api.cloudflare.com/client/v4';
 
 async function cf(pathOrQuery, { token, fetchImpl, body }) {
-  const res = await fetchImpl(body ? `${CF}/graphql` : `${CF}${pathOrQuery}`, {
+  const r = await fetchJson(body ? `${CF}/graphql` : `${CF}${pathOrQuery}`, {
     method: body ? 'POST' : 'GET',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
+    body: body ? JSON.stringify(body) : undefined, fetchImpl, timeoutMs: 30000,
   });
-  const j = await res.json().catch(() => ({}));
-  return { status: res.status, j };
+  if (r.error) throw new Error(r.error);
+  return { status: r.status, j: r.json };
 }
 
 // Last 24 hours from Cloudflare zone analytics (GraphQL). Returns

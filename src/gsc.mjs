@@ -1,6 +1,7 @@
 // Google Search Console with a service account, no dependencies.
 // Free: Search Analytics (rows) and URL Inspection (2,000/day/property).
 import crypto from 'node:crypto';
+import { fetchJson } from './util.mjs';
 
 const SCOPE = 'https://www.googleapis.com/auth/webmasters.readonly';
 let cached = null;
@@ -18,27 +19,24 @@ export async function gscToken({ json = process.env.GSC_SERVICE_ACCOUNT_JSON, fe
   let sig;
   try { sig = crypto.createSign('RSA-SHA256').update(`${head}.${claim}`).sign(sa.private_key); } catch (e) { return { ok: false, reason: `service account key unusable: ${e.message}` }; }
   const assertion = `${head}.${claim}.${b64u(sig)}`;
-  try {
-    const res = await fetchImpl('https://oauth2.googleapis.com/token', {
-      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: `grant_type=${encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer')}&assertion=${assertion}`,
-    });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok || !j.access_token) return { ok: false, reason: `token exchange HTTP ${res.status}` };
-    cached = { token: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 };
-    return { ok: true, token: j.access_token };
-  } catch (e) { return { ok: false, reason: `token exchange failed: ${e.message}` }; }
+  const r = await fetchJson('https://oauth2.googleapis.com/token', {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: `grant_type=${encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer')}&assertion=${assertion}`, fetchImpl, timeoutMs: 20000,
+  });
+  if (r.error) return { ok: false, reason: `token exchange failed: ${r.error}` };
+  const j = r.json;
+  if (!r.ok || !j.access_token) return { ok: false, reason: `token exchange HTTP ${r.status}` };
+  cached = { token: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 };
+  return { ok: true, token: j.access_token };
 }
 
 async function call(url, body, fetchImpl) {
   const t = await gscToken({ fetchImpl });
   if (!t.ok) return { ok: false, reason: t.reason };
-  try {
-    const res = await fetchImpl(url, { method: 'POST', headers: { authorization: `Bearer ${t.token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok) return { ok: false, reason: `HTTP ${res.status} ${String(j?.error?.message || '').slice(0, 100)}` };
-    return { ok: true, data: j };
-  } catch (e) { return { ok: false, reason: e.message }; }
+  const r = await fetchJson(url, { method: 'POST', headers: { authorization: `Bearer ${t.token}`, 'content-type': 'application/json' }, body: JSON.stringify(body), fetchImpl, timeoutMs: 45000 });
+  if (r.error) return { ok: false, reason: r.error };
+  if (!r.ok) return { ok: false, reason: `HTTP ${r.status} ${String(r.json?.error?.message || '').slice(0, 100)}` };
+  return { ok: true, data: r.json };
 }
 
 export async function searchAnalytics(siteUrl, body, { fetchImpl = fetch } = {}) {

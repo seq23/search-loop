@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sleep } from './util.mjs';
+import { sleep, runClock, progress } from './util.mjs';
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_ROUTING = path.join(ENGINE_ROOT, 'config', 'free-models.json');
@@ -32,8 +32,15 @@ export function loadRouting(cfg) {
 }
 
 // Per-run lane state, so a lane whose DAILY quota is gone is not re-tried for every page.
-export const laneState = { closed: {}, workersNeurons: 0 };
-export function resetLanes() { laneState.closed = {}; laneState.workersNeurons = 0; }
+// A model that timed out once is skipped for the rest of the run (`slow`), so one
+// stuck free model costs one timeout per run, not one per page.
+export const laneState = { closed: {}, workersNeurons: 0, slow: {} };
+export function resetLanes() { laneState.closed = {}; laneState.workersNeurons = 0; laneState.slow = {}; }
+
+// Time limits (ms). REQUEST: one model call, body included. CALL: one freeChat
+// across every lane, model and backoff — the bound that stops a run from hanging
+// on a chain of slow free models (heygetonmylevel run 41319477589 sat silent 60 min).
+export const LIMITS = { requestMs: 60000, callMs: 4 * 60000 };
 
 async function post(fetchImpl, url, headers, body, timeoutMs) {
   const ctrl = new AbortController();
@@ -42,18 +49,32 @@ async function post(fetchImpl, url, headers, body, timeoutMs) {
     const res = await fetchImpl(url, { method: 'POST', signal: ctrl.signal, headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
     const payload = await res.json().catch(() => ({}));
     return { res, payload };
-  } catch (e) { return { error: String(e?.message || e).slice(0, 120) }; } finally { clearTimeout(t); }
+  } catch (e) { return { error: ctrl.signal.aborted ? `timed out after ${Math.round(timeoutMs / 1000)}s` : String(e?.message || e).slice(0, 120), timedOut: ctrl.signal.aborted }; } finally { clearTimeout(t); }
+}
+// Per-model turn: skip models already slow this run; stop when the call's deadline
+// has passed; otherwise the request timeout never runs past the deadline.
+function turn(lane, model, { deadline, clock, timeoutMs }) {
+  if (laneState.slow[`${lane}:${model}`]) return null;
+  const left = deadline - clock();
+  if (left <= 0) return null;
+  return Math.max(1, Math.min(timeoutMs, left));
+}
+function failed(lane, model, r, attempts) {
+  if (r.timedOut) laneState.slow[`${lane}:${model}`] = r.error;
+  attempts.push({ lane, model, status: r.timedOut ? 'timeout' : 'error' });
+  progress('model', `${lane} ${model}: ${r.error}`);
 }
 const retryAfter = (res) => { const n = Number(res?.headers?.get?.('retry-after')); return Number.isFinite(n) ? n : null; };
 
 // --- lane 1: GitHub Models --------------------------------------------------
-async function githubLane({ route, messages, maxTokens, fetchImpl, timeoutMs, attempts }) {
+async function githubLane({ route, messages, maxTokens, fetchImpl, timeoutMs, attempts, deadline, clock }) {
   const token = process.env.GITHUB_MODELS_TOKEN;
   if (!token) { laneState.closed.github = 'not read: no GITHUB_MODELS_TOKEN (the caller must grant permissions: models: read)'; return { next: true }; }
   let soonest = null;
   for (const model of route.github) {
-    const r = await post(fetchImpl, 'https://models.github.ai/inference/chat/completions', { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' }, { model, messages, max_tokens: Math.min(maxTokens, 4000), temperature: 0.4 }, timeoutMs);
-    if (r.error) { attempts.push({ lane: 'github', model, status: 'error' }); continue; }
+    const ms = turn('github', model, { deadline, clock, timeoutMs }); if (ms == null) continue;
+    const r = await post(fetchImpl, 'https://models.github.ai/inference/chat/completions', { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' }, { model, messages, max_tokens: Math.min(maxTokens, 4000), temperature: 0.4 }, ms);
+    if (r.error) { failed('github', model, r, attempts); continue; }
     const { res, payload } = r;
     if (res.status === 401 || res.status === 403) { laneState.closed.github = `GitHub Models refused the token (HTTP ${res.status}); the caller needs permissions: models: read`; attempts.push({ lane: 'github', model, status: `http_${res.status}` }); return { next: true }; }
     if (res.status === 429) { attempts.push({ lane: 'github', model, status: 'http_429' }); const ra = retryAfter(res); if (ra != null && ra > 3600) continue; soonest = Math.min(soonest ?? Infinity, ra ?? 60); continue; }
@@ -65,12 +86,13 @@ async function githubLane({ route, messages, maxTokens, fetchImpl, timeoutMs, at
 }
 
 // --- lane 2: OpenRouter :free -------------------------------------------------
-async function openrouterLane({ route, messages, maxTokens, fetchImpl, timeoutMs, attempts, apiKey }) {
+async function openrouterLane({ route, messages, maxTokens, fetchImpl, timeoutMs, attempts, apiKey, deadline, clock }) {
   if (!apiKey) { laneState.closed.openrouter = 'not read: OPENROUTER_API_KEY is not set'; return { next: true }; }
   let soonest = null;
   for (const model of route.models) {
-    const r = await post(fetchImpl, route.endpoint, { authorization: `Bearer ${apiKey}` }, { model, messages, temperature: 0.4, max_tokens: maxTokens + 2048, reasoning: { effort: 'low', exclude: true }, usage: { include: true }, provider: { allow_fallbacks: false } }, timeoutMs);
-    if (r.error) { attempts.push({ lane: 'openrouter', model, status: 'error' }); continue; }
+    const ms = turn('openrouter', model, { deadline, clock, timeoutMs }); if (ms == null) continue;
+    const r = await post(fetchImpl, route.endpoint, { authorization: `Bearer ${apiKey}` }, { model, messages, temperature: 0.4, max_tokens: maxTokens + 2048, reasoning: { effort: 'low', exclude: true }, usage: { include: true }, provider: { allow_fallbacks: false } }, ms);
+    if (r.error) { failed('openrouter', model, r, attempts); continue; }
     const { res, payload } = r;
     if (res.status === 401 || res.status === 402 || res.status === 403) { laneState.closed.openrouter = `OpenRouter refused the key (HTTP ${res.status})`; attempts.push({ lane: 'openrouter', model, status: `http_${res.status}` }); return { next: true, keyRefused: true }; }
     const cost = payload?.usage?.cost;
@@ -108,7 +130,7 @@ export async function workersUsedToday({ w, fetchImpl, account, token, now = new
   return { mine, all };
 }
 
-async function workersLane({ route, messages, maxTokens, fetchImpl, timeoutMs, attempts, now }) {
+async function workersLane({ route, messages, maxTokens, fetchImpl, timeoutMs, attempts, now, deadline, clock }) {
   const w = route.workers;
   const account = process.env.CLOUDFLARE_ACCOUNT_ID; const token = process.env.CLOUDFLARE_API_TOKEN;
   if (!w) { laneState.closed.workers = 'not configured'; return { next: true }; }
@@ -119,9 +141,10 @@ async function workersLane({ route, messages, maxTokens, fetchImpl, timeoutMs, a
   if (used.notRead) { laneState.closed.workers = `closed: today's Workers AI usage could not be read (${used.notRead}); overage is billed, so the lane fails closed`; return { next: true }; }
   const mine = Math.max(used.mine, laneState.workersNeurons);
   if (mine + worst > w.daily_neuron_cap || used.all + worst > w.account_ceiling) { laneState.closed.workers = `engine share of Workers AI used today (${mine}/${w.daily_neuron_cap} neurons; account ${used.all}/${w.account_ceiling})`; return { next: true }; }
-  const r = await post(fetchImpl, `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/${w.model}`, { authorization: `Bearer ${token}` }, { messages, max_tokens: tokens, temperature: 0.4 }, timeoutMs);
+  const ms = turn('workers', w.model, { deadline, clock, timeoutMs }); if (ms == null) return {};
+  const r = await post(fetchImpl, `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/${w.model}`, { authorization: `Bearer ${token}` }, { messages, max_tokens: tokens, temperature: 0.4 }, ms);
   laneState.workersNeurons = mine + worst;
-  if (r.error) { attempts.push({ lane: 'workers', model: w.model, status: 'error' }); return {}; }
+  if (r.error) { failed('workers', w.model, r, attempts); return {}; }
   const answer = r.payload?.result?.response || '';
   if (r.res.status === 401 || r.res.status === 403) { laneState.closed.workers = `Workers AI refused the token (HTTP ${r.res.status})`; return { next: true }; }
   if (!r.res.ok || !String(answer).trim()) { attempts.push({ lane: 'workers', model: w.model, status: r.res.ok ? 'empty' : `http_${r.res.status}` }); return {}; }
@@ -132,27 +155,35 @@ export const LANES = [['github', githubLane], ['openrouter', openrouterLane], ['
 export const BACKOFF = { rounds: 3, maxWaitS: 120, budgetS: 360 };
 
 // Returns { ok, answer, model } or { ok:false, stop, rateLimited, reason, attempts }.
-export async function freeChat({ cfg, messages, maxTokens = 3500, apiKey = process.env.OPENROUTER_API_KEY, fetchImpl = fetch, sleepImpl = sleep, timeoutMs = 90000, now = new Date() }) {
+// Bounded in time: every request has LIMITS.requestMs, the whole call LIMITS.callMs
+// (lanes, models and backoff together), and no call starts once the run's soft
+// budget has passed (stop MODEL_TIME_BUDGET; the search stays queued).
+export async function freeChat({ cfg, messages, maxTokens = 3500, apiKey = process.env.OPENROUTER_API_KEY, fetchImpl = fetch, sleepImpl = sleep, timeoutMs = LIMITS.requestMs, callMs = LIMITS.callMs, clock = Date.now, now = new Date() }) {
   const route = loadRouting(cfg);
   const attempts = [];
+  if (clock() > runClock.softAt) return { ok: false, stop: 'MODEL_TIME_BUDGET', rateLimited: false, reason: "the run's time budget is used; no new model call starts (the search stays queued)", attempts };
+  const deadline = Math.min(clock() + callMs, runClock.softAt);
   let waited = 0;
   for (let round = 0; round < BACKOFF.rounds; round++) {
     let soonest = null;
     for (const [name, lane] of LANES) {
       if (laneState.closed[name]) continue;
-      const r = await lane({ route, messages, maxTokens, fetchImpl, timeoutMs, attempts, apiKey, now });
-      if (r.ok) return { ok: true, answer: r.answer, model: r.model, attempts };
+      if (clock() >= deadline) break;
+      const r = await lane({ route, messages, maxTokens, fetchImpl, timeoutMs, attempts, apiKey, now, deadline, clock });
+      if (r.ok) { progress('model', `answered by ${r.model}`); return { ok: true, answer: r.answer, model: r.model, attempts }; }
       if (r.retryIn != null) soonest = Math.min(soonest ?? Infinity, r.retryIn);
     }
+    if (clock() >= deadline) { attempts.push({ lane: 'all', status: `call budget ${Math.round(callMs / 1000)}s used` }); break; }
     const open = LANES.filter(([n]) => !laneState.closed[n]);
     if (!open.length || soonest == null || round === BACKOFF.rounds - 1) break;
     const wait = Math.min(BACKOFF.maxWaitS, Math.max(5, soonest) * (round + 1));
-    if (waited + wait > BACKOFF.budgetS) break;
+    if (waited + wait > BACKOFF.budgetS || clock() + wait * 1000 >= deadline) break;
+    progress('model', `every open lane is rate-limited; backing off ${wait}s`);
     attempts.push({ lane: 'all', status: `backoff ${wait}s` });
     await sleepImpl(wait * 1000);
     waited += wait;
   }
-  const closed = Object.entries(laneState.closed).map(([k, v]) => `${k}: ${v}`);
+  const closed = [...Object.entries(laneState.closed).map(([k, v]) => `${k}: ${v}`), ...Object.keys(laneState.slow).map((k) => `${k}: timed out (skipped this run)`)];
   const allKeysMissing = !process.env.GITHUB_MODELS_TOKEN && !apiKey && !(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN);
   if (allKeysMissing) return { ok: false, stop: 'FREE_MODEL_KEY_MISSING', reason: 'no free model lane has a credential (GITHUB_MODELS_TOKEN, OPENROUTER_API_KEY, CLOUDFLARE_*)', attempts };
   const limited = attempts.filter((a) => /429|quota|backoff/.test(a.status)).length;

@@ -63,7 +63,9 @@ on:
 jobs:
   loop:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    # ~4x a normal run (20 min) after the scheduled stagger (0-39 min). The engine's own
+    # soft budget (35 min) and watchdog (55 min, NAMED STOP [RUN_HUNG]) end first.
+    timeout-minutes: 100
     outputs:
       mode: ${{ steps.engine.outputs.mode }}
       published: ${{ steps.engine.outputs.published }}
