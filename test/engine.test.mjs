@@ -420,8 +420,11 @@ test('a free model that never answers cannot hang the run: request timeout, call
     assert.ok(Object.keys(laneState.slow).length >= 1, 'a model that timed out is marked slow');
     assert.match(r.reason, /timed out/);
     // The slow models are skipped for the rest of the run: the next call does not re-wait on them.
+    const slowBefore = Object.keys(laneState.slow).map((k) => k.split(':').slice(1).join(':'));
+    const askedBefore = asked.length;
     r = await freeChat({ cfg, messages: msgs, apiKey: 'k', fetchImpl: hang, sleepImpl: async () => {}, timeoutMs: 100, callMs: 250 });
-    assert.equal(new Set(asked).size, asked.length, `no model asked twice in one run: ${asked.join(', ')}`);
+    const again = asked.slice(askedBefore).filter((m) => slowBefore.includes(m));
+    assert.deepEqual(again, [], `a model that used its full timeout is not asked again in the run: ${again.join(', ')}`);
     // Past the run's soft budget no model call starts at all.
     resetLanes(); runClock.softAt = Date.now() - 1;
     const n = calls;
@@ -478,4 +481,29 @@ test('site chrome links (footer Maps listing, socials) do not fail the gate; a d
   assert.deepEqual(gate({ query: 'how to plan your week as a founder', html, facts: d.facts }, { cfg, corpus: [], siblings: [] }), []);
   const body = html.replace('</article>', '<p><a href="https://www.facebook.com/someone-else">a page elsewhere</a></p></article>');
   assert.ok(gate({ query: 'how to plan your week as a founder', html: body, facts: d.facts }, { cfg, corpus: [], siblings: [] }).some((p) => p.startsWith('links:')));
+});
+
+test('a model cut short by the call deadline is not skipped for the run; a full timeout still is', { timeout: 10000 }, async () => {
+  // Shape of sprylabs-hpc-site run 41439077206: three OpenRouter models used their full
+  // timeout, Workers AI got the 14 s left in the call, timed out, and was skipped for the
+  // run, so the next page had no lane at all and the run was named NO_FREE_MODEL.
+  const { freeChat, resetLanes, laneState } = await import('../src/llm.mjs');
+  const { startClock } = await import('../src/util.mjs');
+  const cfg = { root: process.cwd() };
+  const msgs = [{ role: 'user', content: 'x' }];
+  const asked = [];
+  const hang = (u, init) => { asked.push(JSON.parse(init.body).model); return new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted')))); };
+  process.env.GEMINI_API_KEY = 'gm';
+  try {
+    resetLanes(); startClock({});
+    const r = await freeChat({ cfg, messages: msgs, apiKey: 'k', fetchImpl: hang, sleepImpl: async () => {}, timeoutMs: 100, callMs: 250 });
+    assert.equal(r.stop, 'NO_FREE_MODEL');
+    const slow = Object.keys(laneState.slow);
+    const askedModels = asked.length;
+    assert.ok(askedModels >= 3, `the case must ask at least three models (${askedModels})`);
+    assert.equal(slow.length, askedModels - 1, `only the models that had the full 100 ms are slow: ${slow.join(', ')} of ${asked.join(', ')}`);
+    const cut = asked[asked.length - 1];
+    assert.ok(!slow.some((k) => k.endsWith(`:${cut}`)), `the model cut short (${cut}) is not skipped for the run`);
+    assert.match(r.reason + JSON.stringify(r.attempts), /cut short by the call budget/);
+  } finally { delete process.env.GEMINI_API_KEY; startClock({}); resetLanes(); }
 });
