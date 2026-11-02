@@ -10,7 +10,9 @@ import { selfTest } from '../src/self-test.mjs';
 import { checkReport, REPORT_FIELDS } from '../src/report.mjs';
 import { lowest, resolveMode, MODE_RULES } from '../src/mode.mjs';
 import { scoreCandidate, claimedElsewhere } from '../src/find.mjs';
-import { withRelatedLink, withoutRelatedLink } from '../src/render.mjs';
+import { render, withRelatedLink, withoutRelatedLink } from '../src/render.mjs';
+import { gate } from '../src/gate.mjs';
+import { fixtureConfig } from '../src/fixture.mjs';
 import { loadRouting } from '../src/llm.mjs';
 import { dueCheckpoints } from '../src/check.mjs';
 
@@ -427,4 +429,41 @@ test('a free model that never answers cannot hang the run: request timeout, call
     assert.equal(r.stop, 'MODEL_TIME_BUDGET');
     assert.equal(calls, n, 'no request after the budget');
   } finally { delete process.env.GEMINI_API_KEY; startClock({}); resetLanes(); }
+});
+
+test('an action URL and a fact source with a query string (&) pass the gate after render escapes them', () => {
+  // render writes href="${esc(url)}" (& -> &amp;); the gate must compare the
+  // decoded value, or every draft for a site whose action carries UTM params is
+  // dropped ("must end in the site's one action") and the site never publishes.
+  const cfg = { ...fixtureConfig(), action: { label: 'Start an inquiry', url: 'https://example.com/start?utm_source=a&utm_medium=referral&utm_campaign=search-loop' } };
+  const d = fixtureDraft();
+  d.facts = [{ ...d.facts[0], source_url: 'https://en.wikipedia.org/w/index.php?title=ISO_week_date&oldid=1', verified: true }];
+  const html = render(cfg, { slug: 'how-to-plan-your-week', draft: d, related: [{ route: '/weekly-review/', anchor: 'How to run a weekly review' }], published: '2026-11-01' });
+  const escaped = html.match(/href="[^"]*&amp;[^"]*"/g) || [];
+  assert.ok(escaped.length >= 2, `the case must exercise escaped hrefs (action + fact); saw ${escaped.length}`);
+  assert.deepEqual(gate({ query: 'how to plan your week as a founder', html, facts: d.facts }, { cfg, corpus: [], siblings: [] }), []);
+  // and a page that really ends elsewhere still fails
+  const wrong = html.replace('</article>', '<p><a href="/weekly-review/">How to run a weekly review</a></p></article>');
+  assert.ok(gate({ query: 'how to plan your week as a founder', html: wrong, facts: d.facts }, { cfg, corpus: [], siblings: [] }).some((p) => p.startsWith('action:')));
+});
+
+test('drafts that answered and failed the gate are not named NO_FREE_MODEL when a lane runs out mid-fix', async () => {
+  // Shape of virtualagency-os 2 Nov: every search drafted, every draft dropped by the
+  // gate, a lane rate-limited only on a fix pass -> named the gate, not the lanes.
+  const root = site();
+  const calls = { n: 0, limited: 0 };
+  const thinThenLimitedOnFix = async ({ messages }) => {
+    calls.n++;
+    if (/Your previous draft failed these checks/.test(messages[1].content) && calls.limited < 1) { calls.limited++; return { ok: false, stop: 'NO_FREE_MODEL', rateLimited: true, reason: 'all 429' }; }
+    const d = fixtureDraft(); d.sections = d.sections.slice(0, 1); return { ok: true, answer: JSON.stringify(d) };
+  };
+  const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: thinThenLimitedOnFix });
+  assert.equal(calls.limited, 1, 'the case must hit a lane outage on a fix pass');
+  assert.ok(r.did.build.lanes_out, 'BUILD saw the lanes out');
+  assert.ok(r.did.build.dropped > 0, 'drafts reached the gate and were dropped');
+  assert.equal(r.did.build.published, 0);
+  assert.equal(r.stop, null);
+  assert.doesNotMatch(r.report.notes.join('\n'), /\[NO_FREE_MODEL\]/);
+  assert.match(r.report.notes.join('\n'), /failed the gate and were dropped/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/runs.json'), 'utf8')).no_free_model, undefined, 'no streak started');
 });

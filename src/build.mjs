@@ -134,7 +134,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
             result.quota = Math.min(result.quota, Math.max(0, 3 - publishedToday));
           }
         }
-        if (failsInRow >= 2) { notes.push('BUILD stopped early: the free model route failed twice in a row'); return finish(); }
+        if (failsInRow >= 2) { result.lanes_stopped = true; notes.push('BUILD stopped early: the free model route failed twice in a row'); return finish(); }
         break;
       }
       failsInRow = 0;

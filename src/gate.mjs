@@ -3,7 +3,7 @@
 // checklist.json, phase B + d4) plus: no invented people, credentials, reviews
 // or stats; near-duplicate check; the health/dental gate when configured.
 // Fail -> fix once or drop. Never publish thin.
-import { stripTags, wordCount, shingles, jaccard, tokenOverlap } from './util.mjs';
+import { stripTags, unescAttr, wordCount, shingles, jaccard, tokenOverlap } from './util.mjs';
 
 export const LIMITS = { title: [30, 65], meta: [120, 160], answer: [40, 60], faq: [3, 6], faqAnswer: [40, 60], minWords: 600, nearDup: 0.35 };
 
@@ -81,7 +81,7 @@ export function gate(page, ctx) {
   }
   // B8 anchors + alt
   for (const m of html.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
-    const href = m[1]; const anchor = stripTags(m[2]);
+    const href = unescAttr(m[1]); const anchor = stripTags(m[2]);
     if (WEAK_ANCHOR.test(anchor)) p.push(`b8 weak anchor text "${anchor}"`);
     if (/^(mailto:|tel:|#)/.test(href)) continue;
     const abs = href.startsWith('/') ? cfg.base_url + href : href;
@@ -98,7 +98,7 @@ export function gate(page, ctx) {
   else if (!text.includes(String(art.datePublished).slice(0, 10)) && !html.includes(`datetime="${String(art.datePublished).slice(0, 10)}`)) p.push('d4 published date is not visible on the page');
   // The site's one action, at the end.
   const actionAbs = cfg.action.url.startsWith('/') ? cfg.action.url : cfg.action.url.replace(cfg.base_url, '');
-  const lastLink = [...main.matchAll(/<a\s[^>]*href=["']([^"']+)["']/gi)].pop()?.[1] || '';
+  const lastLink = unescAttr([...main.matchAll(/<a\s[^>]*href=["']([^"']+)["']/gi)].pop()?.[1] || '');
   if (!(lastLink === cfg.action.url || lastLink === actionAbs || lastLink === cfg.base_url + actionAbs)) p.push(`action: the page must end in the site's one action (${cfg.action.url})`);
   // Sourced facts; nothing invented.
   if (verifiedFacts.length < 1) p.push('facts: needs at least one fact whose source URL answered 200');

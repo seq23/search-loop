@@ -82,7 +82,11 @@ export async function run(opts) {
   // red (exit 2) only when it lasts: the 3rd such run in a row, or 24 h since the
   // first one (whichever comes first). Any run that publishes, or whose lanes
   // answer, ends the streak. Kept in runs.json so it survives between runs.
-  const lanesOut = Boolean(did.build?.lanes_out && !did.build.published);
+  // Lanes count as the cause only when they cost a page: a search left with no
+  // answer, or BUILD ended early on them. Drafts that answered and then failed
+  // the gate are the gate's story (the BUILD note and the dropped ledger say
+  // which check), never NO_FREE_MODEL.
+  const lanesOut = Boolean(did.build?.lanes_out && !did.build.published && (did.build.model_failed || did.build.lanes_stopped));
   let stop = null;
   if (did.build) {
     const runsLedger = L.read('runs', { last_check: null, history: [] });
