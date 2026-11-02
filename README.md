@@ -129,4 +129,4 @@ npm run check        # validator + its self-test, unit tests, engine --self-test
 node bin/search-loop.mjs run --config search-loop.config.json --stage find   # in a site checkout
 ```
 
-Releases: semver tags `v1.x.y` plus the moving `v1` tag that callers pin.
+Releases: semver tags `v1.x.y` plus the moving `v1` tag that callers pin. Title the PR `v1.x.y: …`; on merge `.github/workflows/release.yml` creates the tag and moves `v1` to it (no manual step).

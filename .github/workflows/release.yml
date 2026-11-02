@@ -1,0 +1,49 @@
+name: release
+# Callers pin the moving `v1` tag (README "Releases"). Until 2 Nov 2026 that tag was
+# moved by hand after each merge, so a merged engine fix (v1.2.6) did nothing for the
+# sites until someone remembered. This tags the release named in the merged commit
+# message ("v1.x.y: ...", the PR title convention) and moves `v1` to it.
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm run check
+      - name: Tag the release and move v1
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          ver="$(printf '%s\n' "$MSG" | grep -oE '^v1\.[0-9]+\.[0-9]+:' | head -1 | tr -d ':')"
+          if [ -z "$ver" ]; then
+            echo "NAMED STOP [NOT_A_RELEASE] no 'v1.x.y:' line in the merged commit message; v1 stays where it is."
+            exit 0
+          fi
+          if git rev-parse -q --verify "refs/tags/$ver" >/dev/null; then
+            at="$(git rev-list -n1 "$ver")"
+            if [ "$at" != "$GITHUB_SHA" ]; then
+              echo "::error::RELEASE_TAG_TAKEN $ver already points at $at, not $GITHUB_SHA — bump the version in the PR title."
+              exit 1
+            fi
+          else
+            git tag "$ver" "$GITHUB_SHA"
+            git push origin "refs/tags/$ver"
+          fi
+          git tag -f v1 "$GITHUB_SHA"
+          git push origin "+refs/tags/v1"
+          test "$(git ls-remote origin refs/tags/v1 | cut -f1)" = "$GITHUB_SHA"
+          echo "released $ver; v1 -> $GITHUB_SHA"
