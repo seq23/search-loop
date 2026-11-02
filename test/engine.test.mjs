@@ -140,17 +140,36 @@ test('unreadable global switch fails to slow, never normal', async () => {
   assert.match(m.notes.join(' '), /MODE_UNREAD/);
 });
 
-test('rate-limited free model drops the day to slow with a named note', async () => {
-  const root = site();
+test('every free lane out is a NOTE the next run retries; red only at 3 runs in a row or 24 h; a publish ends the streak', async () => {
   const limited = async () => ({ ok: false, stop: 'NO_FREE_MODEL', rateLimited: true, reason: 'all 429' });
-  const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: limited });
-  assert.equal(r.mode, 'slow');
-  assert.match(r.report.notes.join('\n'), /NAMED NOTE \[FREE_MODEL_RATE_LIMITED\]/);
-  assert.equal(r.report.state, 'slow');
-  // Nothing published because every lane is out: a named stop with a non-zero exit, never a silent 0.
-  assert.equal(r.did.build.published, 0);
-  assert.equal(r.stop?.stopCode, 'NO_FREE_MODEL');
-  assert.equal(r.stop.code, 2);
+  const at = (h) => new Date(NOW.getTime() + h * 3600000);
+  const streakOf = (root) => JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/runs.json'), 'utf8')).no_free_model;
+  const root = site();
+  // Runs 1 and 2: rate-limited -> slow for the day, nothing published, searches queued -> a named NOTE, exit 0.
+  for (const [i, h] of [[1, 0], [2, 2]]) {
+    const r = await run({ root, now: at(h), 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: limited });
+    assert.equal(r.mode, 'slow');
+    assert.equal(r.report.state, 'slow');
+    assert.match(r.report.notes.join('\n'), /NAMED NOTE \[FREE_MODEL_RATE_LIMITED\]/);
+    assert.equal(r.did.build.published, 0);
+    assert.equal(r.stop, null, `run ${i} of the streak is not red`);
+    assert.match(r.report.notes.join('\n'), new RegExp(`NAMED NOTE \\[NO_FREE_MODEL\\].*run ${i} in a row`), 'the weekly report carries the note');
+    assert.equal(streakOf(root).runs, i);
+  }
+  // Run 3 in a row: a lasting outage goes red (exit 2), never a silent 0.
+  const r3 = await run({ root, now: at(4), 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: limited });
+  assert.equal(r3.stop?.stopCode, 'NO_FREE_MODEL');
+  assert.equal(r3.stop.code, 2);
+  assert.match(r3.stop.message, /run 3 in a row/);
+  // A run that publishes ends the streak; the next outage starts again as a note.
+  const ok = await run({ root, now: at(30), 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: goodChat() });
+  assert.ok(ok.did.build.published > 0); assert.equal(ok.stop, null);
+  assert.equal(streakOf(root), undefined, 'a publishing run clears the streak');
+  // 24 h rule: two outage runs a day apart go red on the 2nd (once-a-day sites never wait 3 days).
+  const day = site();
+  assert.equal((await run({ root: day, now: at(0), 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: limited })).stop, null);
+  const r24 = await run({ root: day, now: at(24), 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: limited });
+  assert.equal(r24.stop?.stopCode, 'NO_FREE_MODEL', 'a full day publishing nothing is red');
 });
 
 test('missing model key is a named stop line; CHECK and report still run', async () => {
@@ -347,7 +366,7 @@ test('free lanes: Gemini -> OpenRouter -> metered Workers AI, backoff across lan
   // 4. Per-minute 429 everywhere -> back off, then succeed on the next round.
   resetLanes(); env({ GEMINI_API_KEY: 'g' });
   let n = 0; const waits = [];
-  r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: async (ms) => waits.push(ms), fetchImpl: async (u) => { if (String(u).includes('generativelanguage')) { n++; return n <= 3 ? J(429, {}, { 'retry-after': '20' }) : J(200, { choices: [{ message: { content: 'after backoff' } }] }); } return J(429, {}, { 'retry-after': '20' }); } });
+  r = await freeChat({ cfg, messages: msgs, apiKey: 'k', sleepImpl: async (ms) => waits.push(ms), fetchImpl: async (u) => { if (String(u).includes('generativelanguage')) { n++; return n <= loadRouting(cfg).gemini.length ? J(429, {}, { 'retry-after': '20' }) : J(200, { choices: [{ message: { content: 'after backoff' } }] }); } return J(429, {}, { 'retry-after': '20' }); } });
   assert.equal(r.ok, true); assert.ok(waits.length >= 1, 'backed off before retrying');
 
   // 5. Every lane out -> NO_FREE_MODEL, rate-limited (BUILD drops to slow and requeues).
