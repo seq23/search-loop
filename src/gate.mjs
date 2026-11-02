@@ -3,15 +3,38 @@
 // checklist.json, phase B + d4) plus: no invented people, credentials, reviews
 // or stats; near-duplicate check; the health/dental gate when configured.
 // Fail -> fix once or drop. Never publish thin.
+//
+// Two kinds of finding (her ruling, 2 Nov 2026: "no petty validation"):
+// - problems: block the page. Safety and broken output only: invented stats,
+//   reviews, credentials, people; health claims; link targets; unsourced fact
+//   lines; missing structure (H1, FAQPage, social tags, date, action); leaked
+//   placeholders; near-duplicates; and a length FLOOR missed by more than 25%.
+// - notes: never block. Anything over a length limit, a floor missed by less
+//   than 25%, and wording/style rules (search-first title, site name once,
+//   "X is ..." answer, weak anchors, filler phrases). render.mjs fits the title
+//   and meta first, so most of these never fire.
 import { stripTags, wordCount, shingles, jaccard, tokenOverlap } from './util.mjs';
 
 export const LIMITS = { title: [30, 65], meta: [120, 160], answer: [40, 60], faq: [3, 6], faqAnswer: [40, 60], minWords: 600, nearDup: 0.35 };
+
+// The one floor rule: under a minimum blocks only below 75% of it; over a
+// maximum never blocks.
+export const FLOOR_SHARE = 0.75;
+export const belowFloor = (n, min) => n < min * FLOOR_SHARE;
+// Length band -> 'block' (under 75% of the floor), 'note' (outside the band), or null.
+export function band(n, [min, max]) {
+  if (belowFloor(n, min)) return 'block';
+  return n < min || n > max ? 'note' : null;
+}
 
 const STAT = /(\b\d+(\.\d+)?\s?(%|percent\b)|\b\d+\s+(out of|in)\s+\d+\b|\b(studies|research|surveys?|data) (show|shows|find|finds|found|suggests?)\b|\bstatistic)/i;
 const REVIEW = /(testimonial|\breviews? (from|by)\b|\brated \d|\b\d(\.\d)?\s?stars?\b|\b(customers|clients|users|patients) (say|love|rave)\b|\bfive-star\b)/i;
 const CREDENTIAL = /(\bDr\.\s?[A-Z]|\bPh\.?D\b|\bM\.D\.|\bboard[- ]certified\b|\baward[- ]winning\b|\bour (team of )?experts\b|\b\d+\+? years of experience\b|\bas seen (on|in)\b)/;
 const PERSON_QUOTE = /([Aa]ccording to [A-Z][a-z]+ [A-Z][a-z]+|[A-Z][a-z]+ [A-Z][a-z]+,? (a|an|the) [a-z]+ (at|from|with) |“[^”]{10,}”\s?[—-]\s?[A-Z])/;
-const FILLER = /(lorem ipsum|as an ai\b|\[insert|\{\{|todo:|in today's fast-paced world|delve into)/i;
+// Unfinished or leaked model output: a reader sees it, so it blocks.
+const PLACEHOLDER = /(lorem ipsum|as an ai\b|\[insert|\{\{|todo:)/i;
+// Stock filler phrases: style only, a note.
+const FILLER = /(in today's fast-paced world|delve into)/i;
 const WEAK_ANCHOR = /^(click here|here|read more|learn more|this|link|more)$/i;
 export const HEALTH = {
   outcome: /\b(cures?d?|heals?|guarantee[sd]?|guaranteed results|painless|pain[- ]free|100% (safe|effective)|will (fix|eliminate|resolve|reverse)|permanent(ly)? (fix|results)|no side effects|risk[- ]free)\b/i,
@@ -39,8 +62,15 @@ function jsonLd(html) {
 // page: { query, title, html, facts:[{claim, source_url, verified}] }
 // ctx: { cfg, corpus:[{route, sh}], siblings:[{route, sh}], selfRoute }
 export function gate(page, ctx) {
+  return gateReport(page, ctx).problems;
+}
+
+// { problems: [] block the page, notes: [] never block }
+export function gateReport(page, ctx) {
   const { cfg } = ctx;
   const p = [];
+  const notes = [];
+  const lengthRule = (n, lim, msg) => { const b = band(n, lim); if (b === 'block') p.push(msg); else if (b === 'note') notes.push(msg); };
   const html = page.html || '';
   const title = stripTags((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '');
   const meta = (html.match(/<meta[^>]+name=["']description["'][^>]*content=["']([^"']*)/i) || html.match(/<meta[^>]+content=["']([^"']*)["'][^>]*name=["']description["']/i) || [])[1] || '';
@@ -50,30 +80,30 @@ export function gate(page, ctx) {
   const factText = verifiedFacts.map((f) => f.claim).join(' ');
 
   // B1 / B10 title
-  if (title.length < LIMITS.title[0] || title.length > LIMITS.title[1]) p.push(`b1 title is ${title.length} chars (needs ${LIMITS.title.join('-')})`);
+  lengthRule(title.length, LIMITS.title, `b1 title is ${title.length} chars (aim ${LIMITS.title.join('-')})`);
   const nameHits = title.split(cfg.site_name).length - 1;
-  if (nameHits !== 1) p.push(`b10 title must name "${cfg.site_name}" exactly once (found ${nameHits})`);
+  if (nameHits !== 1) notes.push(`b10 title must name "${cfg.site_name}" exactly once (found ${nameHits})`);
   const lead = title.split(/\s[—|-]\s/)[0];
-  if (tokenOverlap(lead, page.query) < 0.5) p.push('b1 title must put the search first');
+  if (tokenOverlap(lead, page.query) < 0.5) notes.push('b1 title does not put the search first');
   // B2 meta
-  if (meta.length < LIMITS.meta[0] || meta.length > LIMITS.meta[1]) p.push(`b2 meta description is ${meta.length} chars (needs ${LIMITS.meta.join('-')})`);
+  lengthRule(meta.length, LIMITS.meta, `b2 meta description is ${meta.length} chars (aim ${LIMITS.meta.join('-')})`);
   // B3 one H1
   if (h1s.length !== 1) p.push(`b3 needs exactly one H1 (found ${h1s.length})`);
   // B4 direct answer first
   const aw = wordCount(firstP);
-  if (aw < LIMITS.answer[0] || aw > LIMITS.answer[1]) p.push(`b4 direct answer under the H1 is ${aw} words (needs ${LIMITS.answer.join('-')})`);
-  if (!/\b(is|are)\b/.test(firstP)) p.push('b4 direct answer must define: "X is ..."');
+  lengthRule(aw, LIMITS.answer, `b4 direct answer under the H1 is ${aw} words (aim ${LIMITS.answer.join('-')})`);
+  if (!/\b(is|are)\b/.test(firstP)) notes.push('b4 direct answer does not define: "X is ..."');
   // B5 FAQ visible + one FAQPage
   const ld = jsonLd(html);
   if (ld.some((x) => x['@type'] === 'INVALID')) p.push('c structured data block is not valid JSON');
   const faqs = ld.filter((x) => x['@type'] === 'FAQPage');
   if (faqs.length !== 1) p.push(`b5 needs exactly one FAQPage (found ${faqs.length})`);
   const qs = faqs[0]?.mainEntity || [];
-  if (qs.length < LIMITS.faq[0] || qs.length > LIMITS.faq[1]) p.push(`b5 FAQ has ${qs.length} questions (needs ${LIMITS.faq.join('-')})`);
+  lengthRule(qs.length, LIMITS.faq, `b5 FAQ has ${qs.length} questions (aim ${LIMITS.faq.join('-')})`);
   for (const q of qs) {
     if (!text.includes(stripTags(q.name))) p.push(`b5 FAQ question not visible: "${String(q.name).slice(0, 60)}"`);
     const n = wordCount(q.acceptedAnswer?.text);
-    if (n < LIMITS.faqAnswer[0] || n > LIMITS.faqAnswer[1]) p.push(`b5 FAQ answer is ${n} words (needs ${LIMITS.faqAnswer.join('-')}): "${String(q.name).slice(0, 50)}"`);
+    lengthRule(n, LIMITS.faqAnswer, `b5 FAQ answer is ${n} words (aim ${LIMITS.faqAnswer.join('-')}): "${String(q.name).slice(0, 50)}"`);
   }
   // B6 social tags
   for (const t of ['og:title', 'og:description', 'og:type', 'og:url', 'og:site_name', 'og:image', 'og:image:width', 'og:image:height']) {
@@ -82,7 +112,7 @@ export function gate(page, ctx) {
   // B8 anchors + alt
   for (const m of html.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
     const href = m[1]; const anchor = stripTags(m[2]);
-    if (WEAK_ANCHOR.test(anchor)) p.push(`b8 weak anchor text "${anchor}"`);
+    if (WEAK_ANCHOR.test(anchor)) notes.push(`b8 weak anchor text "${anchor}"`);
     if (/^(mailto:|tel:|#)/.test(href)) continue;
     const abs = href.startsWith('/') ? cfg.base_url + href : href;
     const allowedSource = verifiedFacts.some((f) => f.source_url === href);
@@ -91,7 +121,8 @@ export function gate(page, ctx) {
   for (const m of html.matchAll(/<img\b[^>]*>/gi)) if (!/\balt=["'][^"']+["']/.test(m[0]) && !/role=["']presentation/.test(m[0])) p.push('b8 image without alt text');
   // B9 word count
   const wc = wordCount(text);
-  if (wc < LIMITS.minWords) p.push(`b9 ${wc} words of visible text (needs ${LIMITS.minWords}+ for a guide) — thin`);
+  if (belowFloor(wc, LIMITS.minWords)) p.push(`b9 ${wc} words of visible text (under ${Math.ceil(LIMITS.minWords * FLOOR_SHARE)}, 75% of the ${LIMITS.minWords} aim) — thin`);
+  else if (wc < LIMITS.minWords) notes.push(`b9 ${wc} words of visible text (aim ${LIMITS.minWords}+)`);
   // D4 dates visible
   const art = ld.find((x) => x.datePublished);
   if (!art) p.push('d4 needs datePublished in structured data');
@@ -117,7 +148,8 @@ export function gate(page, ctx) {
   if (REVIEW.test(prose)) p.push(`invented: review or testimonial language "${(prose.match(REVIEW) || [])[0]}"`);
   if (CREDENTIAL.test(prose)) p.push(`invented: credential or expert claim "${(prose.match(CREDENTIAL) || [])[0]}"`);
   if (PERSON_QUOTE.test(prose)) p.push(`invented: a named person or quote "${(prose.match(PERSON_QUOTE) || [])[0].slice(0, 60)}"`);
-  if (FILLER.test(text)) p.push(`filler: "${(text.match(FILLER) || [])[0]}"`);
+  if (PLACEHOLDER.test(text)) p.push(`unfinished: placeholder or leaked model text "${(text.match(PLACEHOLDER) || [])[0]}"`);
+  if (FILLER.test(text)) notes.push(`filler phrase: "${(text.match(FILLER) || [])[0]}"`);
   // Health / dental gate.
   if (cfg.health_gate && cfg.health_gate !== 'none') {
     const allowed = cfg.health?.real_facts || {};
@@ -133,5 +165,5 @@ export function gate(page, ctx) {
     const j = jaccard(sh, other.sh);
     if (j >= LIMITS.nearDup) { p.push(`near-duplicate of ${other.route} (similarity ${j.toFixed(2)})`); break; }
   }
-  return p;
+  return { problems: p, notes };
 }
