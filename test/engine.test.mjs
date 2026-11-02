@@ -467,3 +467,15 @@ test('drafts that answered and failed the gate are not named NO_FREE_MODEL when 
   assert.match(r.report.notes.join('\n'), /failed the gate and were dropped/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/runs.json'), 'utf8')).no_free_model, undefined, 'no streak started');
 });
+
+test('site chrome links (footer Maps listing, socials) do not fail the gate; a disallowed link in the page body still does', () => {
+  // Shape of porchandparty901 2 Nov: 17 of 22 drafts dropped for the site's own footer links.
+  const chrome = '<footer><a href="https://www.google.com/maps?cid=1&amp;hl=en">Find us on Google Maps</a> <a href="https://www.facebook.com/example">Example on Facebook</a></footer>';
+  const cfg = { ...fixtureConfig(), template: { ...fixtureConfig().template, footer_html: chrome } };
+  const d = fixtureDraft();
+  const html = render(cfg, { slug: 'how-to-plan-your-week', draft: d, related: [{ route: '/weekly-review/', anchor: 'How to run a weekly review' }], published: '2026-11-01' });
+  assert.ok(html.includes('google.com/maps') && html.includes('facebook.com/example'), 'the case must render the chrome links');
+  assert.deepEqual(gate({ query: 'how to plan your week as a founder', html, facts: d.facts }, { cfg, corpus: [], siblings: [] }), []);
+  const body = html.replace('</article>', '<p><a href="https://www.facebook.com/someone-else">a page elsewhere</a></p></article>');
+  assert.ok(gate({ query: 'how to plan your week as a founder', html: body, facts: d.facts }, { cfg, corpus: [], siblings: [] }).some((p) => p.startsWith('links:')));
+});

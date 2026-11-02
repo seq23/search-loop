@@ -79,8 +79,10 @@ export function gate(page, ctx) {
   for (const t of ['og:title', 'og:description', 'og:type', 'og:url', 'og:site_name', 'og:image', 'og:image:width', 'og:image:height']) {
     if (!new RegExp(`property=["']${t}["']`).test(html)) p.push(`b6 missing ${t}`);
   }
-  // B8 anchors + alt
-  for (const m of html.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+  // B8 anchors + alt, on what the page wrote (<main>). The site's own header and
+  // footer (template.header_html/footer_html: its Maps listing, socials) are
+  // site chrome from the config, not model links, and never fail a draft.
+  for (const m of main.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
     const href = unescAttr(m[1]); const anchor = stripTags(m[2]);
     if (WEAK_ANCHOR.test(anchor)) p.push(`b8 weak anchor text "${anchor}"`);
     if (/^(mailto:|tel:|#)/.test(href)) continue;
