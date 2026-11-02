@@ -31,7 +31,7 @@ export function loadRouting(cfg) {
   // The site's own roster first, then the engine's (deduped): more free models, same $0 rule.
   const dead = new Set(Object.keys(engine.excluded_models || {}).filter((k) => !k.startsWith('_')));
   const ids = [...new Set([...models.map((m) => m.id), ...(engine.free_models || []).map((m) => m.id)])].filter((id) => id.endsWith(':free') && !dead.has(id));
-  return { file, endpoint: r.policy.endpoint || 'https://openrouter.ai/api/v1/chat/completions', models: ids, gemini: engine.gemini_models || [], workers: engine.workers_ai || null };
+  return { file, endpoint: r.policy.endpoint || 'https://openrouter.ai/api/v1/chat/completions', models: ids, gemini: (engine.gemini_models || []).map((m) => (typeof m === 'string' ? m : m.id)), geminiEffort: Object.fromEntries((engine.gemini_models || []).filter((m) => typeof m === 'object').map((m) => [m.id, m.reasoning_effort])), workers: engine.workers_ai || null };
 }
 
 // Per-run lane state, so a lane whose DAILY quota is gone is not re-tried for every page.
@@ -43,7 +43,7 @@ export function resetLanes() { laneState.closed = {}; laneState.workersNeurons =
 // Time limits (ms). REQUEST: one model call, body included. CALL: one freeChat
 // across every lane, model and backoff — the bound that stops a run from hanging
 // on a chain of slow free models (heygetonmylevel run 41319477589 sat silent 60 min).
-export const LIMITS = { requestMs: 60000, callMs: 4 * 60000 };
+export const LIMITS = { requestMs: 90000, callMs: 4 * 60000 };
 
 async function post(fetchImpl, url, headers, body, timeoutMs) {
   const ctrl = new AbortController();
@@ -87,7 +87,7 @@ async function geminiLane({ route, messages, maxTokens, fetchImpl, timeoutMs, at
   let soonest = null;
   for (const model of route.gemini) {
     const ms = turn('gemini', model, { deadline, clock, timeoutMs }); if (ms == null) continue;
-    const r = await post(fetchImpl, 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', { authorization: `Bearer ${key}` }, { model, messages, max_tokens: Math.min(maxTokens, 8000), temperature: 0.4, reasoning_effort: 'none' }, ms);
+    const r = await post(fetchImpl, 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', { authorization: `Bearer ${key}` }, { model, messages, max_tokens: Math.min(maxTokens, 8000), temperature: 0.4, reasoning_effort: route.geminiEffort?.[model] || 'none' }, ms);
     if (r.error) { failed('gemini', model, r, attempts); continue; }
     if (notAnAnswer('gemini', model, r, attempts)) return { next: true };
     const { res, payload } = r;
@@ -100,10 +100,11 @@ async function geminiLane({ route, messages, maxTokens, fetchImpl, timeoutMs, at
       continue;
     }
     const answer = payload?.choices?.[0]?.message?.content || '';
+    if (res.status === 404 || res.status === 400) { laneState.slow[`gemini:${model}`] = res.status === 404 ? 'model gone (HTTP 404)' : 'request refused (HTTP 400)'; attempts.push({ lane: 'gemini', model, status: `http_${res.status}` }); continue; }
     if (!res.ok || !answer.trim()) { attempts.push({ lane: 'gemini', model, status: (res.ok ? 'empty' : `http_${res.status}`) + (payload?._raw ? ` non-JSON ${payload._raw}` : '') }); continue; }
     return { ok: true, answer, model: `gemini:${model}` };
   }
-  if (route.gemini.length && route.gemini.every((m) => laneState.slow[`gemini:${m}`] === 'free daily quota used')) laneState.closed.gemini = 'Gemini free daily quota used up';
+  if (route.gemini.length && route.gemini.every((m) => laneState.slow[`gemini:${m}`]) && route.gemini.some((m) => laneState.slow[`gemini:${m}`] === 'free daily quota used')) laneState.closed.gemini = 'Gemini free daily quota used up';
   return { retryIn: soonest };
 }
 
@@ -113,7 +114,7 @@ async function openrouterLane({ route, messages, maxTokens, fetchImpl, timeoutMs
   let soonest = null;
   for (const model of route.models) {
     const ms = turn('openrouter', model, { deadline, clock, timeoutMs }); if (ms == null) continue;
-    const r = await post(fetchImpl, route.endpoint, { authorization: `Bearer ${apiKey}` }, { model, messages, temperature: 0.4, max_tokens: maxTokens + 2048, reasoning: { effort: 'low', exclude: true }, usage: { include: true }, provider: { allow_fallbacks: false } }, ms);
+    const r = await post(fetchImpl, route.endpoint, { authorization: `Bearer ${apiKey}` }, { model, messages, temperature: 0.4, max_tokens: maxTokens + 2048, reasoning: { enabled: false }, usage: { include: true }, provider: { allow_fallbacks: false } }, ms);
     if (r.error) { failed('openrouter', model, r, attempts); continue; }
     if (notAnAnswer('openrouter', model, r, attempts)) return { next: true };
     const { res, payload } = r;
@@ -222,6 +223,19 @@ export async function freeChat({ cfg, messages, maxTokens = 3500, apiKey = proce
   if (allKeysMissing) return { ok: false, stop: 'FREE_MODEL_KEY_MISSING', reason: 'no free model lane has a credential (GEMINI_API_KEY, OPENROUTER_API_KEY, CLOUDFLARE_*)', attempts };
   const limited = attempts.filter((a) => /429|quota|backoff/.test(a.status)).length;
   return { ok: false, stop: 'NO_FREE_MODEL', rateLimited: limited > 0 || Object.values(laneState.closed).some((v) => /quota|share/.test(v)), reason: `every free lane is out — ${closed.join('; ') || 'no lane answered'} (${attempts.slice(-6).map((a) => `${a.lane}:${String(a.model || '').split('/').pop()}:${a.status}`).join(', ')})`, attempts };
+}
+
+// A NO_FREE_MODEL run is a note while the next run can retry; red only when it lasts.
+// prev = runs.json `no_free_model` ({ since, runs }); returns the new streak (with
+// `red` when it has lasted NO_FREE_MODEL_RED.runs runs in a row or .hours since it
+// began), or null when this run's lanes answered / it published (streak over).
+export const NO_FREE_MODEL_RED = { runs: 3, hours: 24 };
+export function noFreeModelStreak(prev, { out, now = new Date() }) {
+  if (!out) return null;
+  const since = prev?.since && Number.isFinite(Date.parse(prev.since)) ? prev.since : now.toISOString();
+  const runs = (Number(prev?.runs) || 0) + 1;
+  const hours = (now.getTime() - Date.parse(since)) / 3600000;
+  return { since, runs, last_at: now.toISOString(), red: runs >= NO_FREE_MODEL_RED.runs || hours >= NO_FREE_MODEL_RED.hours };
 }
 
 export function parseJsonAnswer(text) {
