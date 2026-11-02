@@ -99,10 +99,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Name any missing secret (the run keeps going)
+      - name: Name any missing secret (a note; the run keeps going and stays green)
         run: |
+          # A missing secret is a NAMED NOTE, never a red run: the stages that need it
+          # write 'not read' (also in the weekly report) and the next run retries.
           for s in OPENROUTER_API_KEY GSC_SERVICE_ACCOUNT_JSON GSC_SITE_URL; do
-            if [ -z "${!s}" ]; then echo "NAMED STOP [SECRET_MISSING_$s] repository secret $s is not passed to search-loop; the stages that need it write 'not read' and the rest run. Add it in the site repo's Settings -> Secrets and pass it in the caller's secrets: block."; fi
+            if [ -z "${!s}" ]; then echo "NAMED NOTE [SECRET_MISSING_$s] repository secret $s is not passed to search-loop; the stages that need it write 'not read' and the rest run. Add it in the site repo's Settings -> Secrets and pass it in the caller's secrets: block." | tee -a "$GITHUB_STEP_SUMMARY"; fi
           done
       - name: Site setup
         if: inputs.setup_command != ''

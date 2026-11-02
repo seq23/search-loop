@@ -5,8 +5,8 @@ import path from 'node:path';
 import { ledger } from './ledger.mjs';
 import { buildIndex } from './site-index.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
-import { render, pageRel, pageUrl, withRelatedLink } from './render.mjs';
-import { gate, LIMITS } from './gate.mjs';
+import { render, pageRel, pageUrl, withRelatedLink, fitMeta } from './render.mjs';
+import { gateReport, LIMITS } from './gate.mjs';
 import { centralDate, slugify, tokenOverlap, shingles, stripTags, sha256, fetchText, daysBetween, pastSoft, progress } from './util.mjs';
 import { intentKey as keyOf } from './find.mjs';
 import { currentPace } from './pace.mjs';
@@ -58,13 +58,8 @@ Hard rules: no statistics, percentages or "studies show" anywhere except inside 
   ];
 }
 
-// A meta description over 160 characters is cut at a word boundary (never padded).
-export function fitMeta(m) {
-  const s = String(m || '').trim();
-  if (s.length <= LIMITS.meta[1]) return s;
-  const cut = s.slice(0, LIMITS.meta[1] - 1).replace(/\s+\S*$/, '').replace(/[,;:\s]+$/, '');
-  return cut.length >= LIMITS.meta[0] ? cut + '.' : s;
-}
+// Lengths are fitted where the page is written (render.mjs); kept exported here for callers.
+export { fitMeta };
 
 export function cleanDraft(d) {
   if (!d || typeof d !== 'object') return null;
@@ -119,7 +114,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     const route = cfg.output.url_prefix + slug + (cfg.output.format === 'dir-index' ? '/' : '');
     if (fs.existsSync(path.join(cfg.root, rel)) || isProtected(cfg, rel)) { book.dropped.push({ query: target.query, at: today, reason: 'path exists or is protected' }); result.dropped++; continue; }
     const related = pickRelated(cfg, index, target.query, { n: 3 });
-    let problems = null; let html = null; let draft = null;
+    let problems = null; let html = null; let draft = null; let gateNotes = [];
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const r = await chat({ cfg, messages: draftPrompt(cfg, target, related, problems), fetchImpl });
       if (!r.ok) {
@@ -145,7 +140,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
       draft.meta_description = fitMeta(draft.meta_description);
       draft.facts = await verifyFacts(draft.facts, fetchImpl);
       html = render(cfg, { slug, draft, related: related.map((p) => ({ route: p.route, anchor: p.h1 || p.title })), published: today });
-      problems = gate({ query: target.query, html, facts: draft.facts }, { cfg, corpus: index, siblings, selfRoute: route });
+      ({ problems, notes: gateNotes } = gateReport({ query: target.query, html, facts: draft.facts }, { cfg, corpus: index, siblings, selfRoute: route }));
       if (!problems.length) break;
     }
     if (!html && !problems) { result.model_failed = (result.model_failed || 0) + 1; continue; } // model never answered: retry next run, not a drop
@@ -172,12 +167,14 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
       linkedFrom.push({ rel: h.rel, route: h.route, before_hash: sha256(before), after_hash: sha256(after) });
     }
     result.related_links += linkedFrom.length;
-    book.pages.push({ slug, query: target.query, score: target.score, signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: today, status: 'live', hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: linkedFrom, checks: {} });
+    book.pages.push({ slug, query: target.query, score: target.score, signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: today, status: 'live', hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: linkedFrom, checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
     result.published++;
+    if (gateNotes.length) result.noted = (result.noted || 0) + 1;
   }
   return finish();
   function finish() {
     L.write('pages', book);
+    if (result.noted) notes.push(`BUILD gate notes (not blocking): ${result.noted} published page(s) are outside a length or style aim; each is listed under gate_notes in pages.json`);
     if (!result.published && !result.stopped) notes.push(`BUILD published 0 of quota ${result.quota}: ${result.dropped} draft(s) failed the gate and were dropped; ${result.model_failed || 0} got no answer from the free model and stay queued`);
     return result;
   }

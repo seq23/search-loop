@@ -1,6 +1,6 @@
 // --self-test: the engine proves its guards catch every broken shape, and
 // that the known-good fixture passes (a gate that fails everything is blind too).
-import { gate } from './gate.mjs';
+import { gate, gateReport, LIMITS } from './gate.mjs';
 import { render } from './render.mjs';
 import { fixtureConfig, fixtureDraft, FIXTURE_CONFIG_RAW } from './fixture.mjs';
 import { checkConfig } from './config.mjs';
@@ -21,14 +21,13 @@ export function cases() {
   const health = (c) => ({ ...c, health_gate: 'dental' });
   const htmlMut = (fn) => () => { const d = fixtureDraft(); const p = page(cfg, d); p.html = fn(p.html); return gate(p, { cfg, corpus: [], siblings: [] }); };
   return [
-    ['title too long', g((d) => { d.title_lead = 'How to plan your week as a founder when everything is on fire and nothing works'; })],
-    ['title without the search first', g((d) => { d.title_lead = 'Our favourite productivity thoughts'; })],
     ['meta too short', g((d) => { d.meta_description = 'Plan your week.'; })],
-    ['direct answer too long', g((d) => { d.direct_answer += ' ' + d.direct_answer; })],
-    ['direct answer does not define', g((d) => { d.direct_answer = d.direct_answer.replace(/\bis\b/g, 'means').replace(/\bare\b/g, 'mean'); })],
     ['only two FAQs', g((d) => { d.faq = d.faq.slice(0, 2); })],
     ['FAQ answer too short', g((d) => { d.faq[0].a = 'About twenty minutes.'; })],
-    ['thin page', g((d) => { d.sections = d.sections.slice(0, 1); })],
+    ['thin page (under 75% of 600 words)', g((d) => { d.sections = d.sections.slice(0, 1).map((x) => ({ ...x, paragraphs: x.paragraphs.slice(0, 1) })); d.faq = d.faq.slice(0, 3); })],
+    ['title far too short (under 75% of 30)', htmlMut((h) => h.replace(/<title>[^<]*<\/title>/, '<title>Plan — Example Planner</title>'))],
+    ['direct answer far too short', g((d) => { d.direct_answer = 'Weekly planning is choosing three outcomes.'; })],
+    ['leaked placeholder text', g((d) => { d.sections[0].paragraphs[0] += ' [insert example here]'; })],
     ['no verified fact', g((d) => { d.facts = d.facts.map((f) => ({ ...f, verified: false })); })],
     ['unsourced statistic', g((d) => { d.sections[0].paragraphs[0] += ' Studies show 73% of founders never plan.'; })],
     ['invented review', g((d) => { d.sections[1].paragraphs[0] += ' Customers love it and rated it 5 stars.'; })],
@@ -38,7 +37,6 @@ export function cases() {
     ['missing og:image', htmlMut((h) => h.replace(/<meta content="[^"]*" property="og:image"\/>/, ''))],
     ['link to a disallowed host', htmlMut((h) => h.replace('</article>', '<p><a href="https://elsewhere.example.org/x">another site</a></p></article>'))],
     ['does not end in the action', htmlMut((h) => h.replace('</article>', '<p><a href="/weekly-review/">How to run a weekly review</a></p></article>'))],
-    ['weak anchor', htmlMut((h) => h.replace('</h1>', '</h1><p><a href="/weekly-review/">click here</a></p>'))],
     ['date not visible', htmlMut((h) => h.replace(/<p class="page-dates">[\s\S]*?<\/p>/, ''))],
     ['FAQ question not visible', htmlMut((h) => h.replace('<h3>How long should weekly planning take?</h3>', '<h3>Planning time</h3>'))],
     ['unsourced fact line', htmlMut((h) => h.replace('</ul></section>', '<li>Most founders plan on Sunday.</li></ul></section>'))],
@@ -56,6 +54,40 @@ export function cases() {
     ['report: off without the sentence', () => checkReport({ ...goodReport(), state: 'off' })],
     ['report: wrong schema', () => checkReport({ ...goodReport(), schema: 'search-loop-week-v2' })],
     ['mode: site config raises the global switch', () => (lowest('slow', 'normal') === 'slow' && lowest('off', 'normal') === 'off' ? ['caught'] : [])],
+  ];
+}
+
+// Style and over-limit shapes: each must be NOTED and must NOT block the page
+// (her ruling, 2 Nov 2026: over a limit never fails; wording is never a block).
+export function noteCases() {
+  const cfg = fixtureConfig();
+  const rep = (mut, htmlFn = (h) => h) => () => { const d = fixtureDraft(); mut(d); const p = page(cfg, d); p.html = htmlFn(p.html); return gateReport(p, { cfg, corpus: [], siblings: [] }); };
+  return [
+    ['title over 65 chars', rep(() => {}, (h) => h.replace(/<title>[^<]*<\/title>/, '<title>How to plan your week as a founder when the whole week is on fire — Example Planner</title>'))],
+    ['title without the search first', rep((d) => { d.title_lead = 'Our favourite productivity thoughts'; })],
+    ['site name twice in the title', rep(() => {}, (h) => h.replace(/<title>[^<]*<\/title>/, '<title>Example Planner: how to plan your week — Example Planner</title>'))],
+    ['meta description a little short', rep((d) => { d.meta_description = d.meta_description.slice(0, 100); })],
+    ['direct answer too long', rep((d) => { d.direct_answer += ' ' + d.direct_answer; })],
+    ['direct answer does not define', rep((d) => { d.direct_answer = d.direct_answer.replace(/\bis\b/g, 'means').replace(/\bare\b/g, 'mean'); })],
+    ['FAQ answer too long', rep((d) => { d.faq[0].a += ' ' + d.faq[0].a; })],
+    ['seven FAQs', rep((d) => { d.faq.push(...d.faq.slice(0, 3).map((f) => ({ q: f.q.replace('?', ' again?'), a: f.a }))); })],
+    ['page a little under 600 words', rep((d) => { d.sections = d.sections.slice(0, 1); })],
+    ['weak anchor', rep(() => {}, (h) => h.replace('<section class="faq">', '<p><a href="/weekly-review/">click here</a></p><section class="faq">'))],
+    ['filler phrase', rep((d) => { d.sections[0].paragraphs[0] += ' Let us delve into it.'; })],
+  ];
+}
+
+// The renderer fits lengths before the gate sees them.
+export function fitCases() {
+  const cfg = fixtureConfig();
+  const titleOf = (d) => render(cfg, { slug: 'x', draft: d, published: TODAY }).match(/<title>([^<]*)<\/title>/)[1];
+  const metaOf = (d) => render(cfg, { slug: 'x', draft: d, published: TODAY }).match(/<meta content="([^"]*)" name="description"/)[1];
+  const named = (t) => t.split(cfg.site_name).length - 1;
+  return [
+    ['long title lead is cut to 65', () => { const d = fixtureDraft(); d.title_lead = 'How to plan your week as a founder when everything is on fire and nothing works'; const t = titleOf(d); return t.length <= LIMITS.title[1] && named(t) === 1 && t.startsWith('How to plan your week'); }],
+    ['site name in the lead appears once', () => { const d = fixtureDraft(); d.title_lead = 'Example Planner: how to plan your week'; return named(titleOf(d)) === 1; }],
+    ['short lead falls back to the H1', () => { const d = fixtureDraft(); d.title_lead = 'Plan'; return titleOf(d).length >= LIMITS.title[0]; }],
+    ['long meta cut to 160', () => { const d = fixtureDraft(); d.meta_description += ' ' + d.meta_description; return metaOf(d).length <= LIMITS.meta[1]; }],
   ];
 }
 
@@ -86,6 +118,11 @@ export async function selfTest() {
   const all = [...cases(), ...extra];
   const missed = all.filter(([, f]) => f().length === 0).map(([n]) => n);
   if (missed.length) throw new NamedStop('SELF_TEST_BLIND', `not caught: ${missed.join(', ')}`, EXIT.PROBLEMS);
+  const noted = noteCases();
+  const blocks = noted.filter(([, f]) => { const r = f(); return r.problems.length > 0 || r.notes.length === 0; }).map(([n, f]) => `${n} (${f().problems.join('; ') || 'no note'})`);
+  if (blocks.length) throw new NamedStop('SELF_TEST_PETTY', `a style or over-limit shape blocks the page or goes unnoted: ${blocks.join(', ')}`, EXIT.PROBLEMS);
+  const unfit = fitCases().filter(([, f]) => !f()).map(([n]) => n);
+  if (unfit.length) throw new NamedStop('SELF_TEST_UNFIT', `the renderer did not fit: ${unfit.join(', ')}`, EXIT.PROBLEMS);
   if (all.length < 40) throw new NamedStop('SELF_TEST_TOO_SMALL', `only ${all.length} broken shapes (floor 40)`, EXIT.NOTHING);
-  return `SELF-TEST OK — ${all.length} broken shapes caught; the known-good page passes the gate`;
+  return `SELF-TEST OK — ${all.length} broken shapes caught; ${noted.length} style shapes noted, never blocking; ${fitCases().length} lengths fitted; the known-good page passes the gate`;
 }

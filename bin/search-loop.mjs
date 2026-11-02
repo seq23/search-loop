@@ -14,7 +14,7 @@ import { currentPace } from '../src/pace.mjs';
 import { ledger } from '../src/ledger.mjs';
 import { NamedStop, EXIT, isoWeek, writeJson, startClock, progress, runClock } from '../src/util.mjs';
 import { selfTest } from '../src/self-test.mjs';
-import { resetLanes, noFreeModelStreak, NO_FREE_MODEL_RED } from '../src/llm.mjs';
+import { resetLanes, noFreeModelStreak } from '../src/llm.mjs';
 import crypto from 'node:crypto';
 
 function args(argv) {
@@ -76,23 +76,20 @@ export async function run(opts) {
   if (stage === 'auto' || stage === 'check') progress('check', 'start');
   if (stage === 'auto' || stage === 'check') did.check = await check(cfg, { rules: rulesFor(mode), mode, now, fetchImpl: opts.fetchImpl, chat: opts.chat, notes });
 
-  // NO_FREE_MODEL streak: a run where every free lane was out and nothing was
-  // published is a NOTE while the searches stay queued and the next run retries
-  // ("a stop the next scheduled run retries is a note, not a red main"). It turns
-  // red (exit 2) only when it lasts: the 3rd such run in a row, or 24 h since the
-  // first one (whichever comes first). Any run that publishes, or whose lanes
-  // answer, ends the streak. Kept in runs.json so it survives between runs.
+  // NO_FREE_MODEL: a run where every free lane was out and nothing was
+  // published is a NAMED NOTE (job summary + weekly report), exit 0: the
+  // searches stay queued and the next scheduled run retries them. Her rule:
+  // "a stop the next scheduled run retries is a note, not a red main". The
+  // streak (runs in a row, since when) is kept in runs.json and named in the
+  // note so a lasting outage is visible; any run whose lanes answer ends it.
   const lanesOut = Boolean(did.build?.lanes_out && !did.build.published);
-  let stop = null;
   if (did.build) {
     const runsLedger = L.read('runs', { last_check: null, history: [] });
     const streak = noFreeModelStreak(runsLedger.no_free_model, { out: lanesOut, now });
     if (streak) runsLedger.no_free_model = streak; else delete runsLedger.no_free_model;
     L.write('runs', runsLedger);
     if (lanesOut) {
-      const what = `every free model lane is out; 0 of ${did.build.quota} page(s) published, the searches stay queued for the next run (run ${streak.runs} in a row since ${streak.since}; red at ${NO_FREE_MODEL_RED.runs} runs in a row or ${NO_FREE_MODEL_RED.hours} h) — ${did.build.lanes_out}`;
-      if (streak.red) stop = new NamedStop('NO_FREE_MODEL', what, EXIT.NOTHING);
-      else notes.push(`NAMED NOTE [NO_FREE_MODEL] ${what}`);
+      notes.push(`NAMED NOTE [NO_FREE_MODEL] every free model lane is out; 0 of ${did.build.quota} page(s) published, the searches stay queued for the next run (run ${streak.runs} in a row since ${streak.since}) — ${did.build.lanes_out}`);
     }
   }
   progress('report', 'writing');
@@ -106,7 +103,7 @@ export async function run(opts) {
   const out = path.resolve(root, opts['report-out'] || path.join(cfg.ledger_dir, 'search-loop-week.json'));
   writeJson(out, report);
   const census = `search-loop ${cfg.site}: mode=${mode} find=${did.find ? `${did.find.targets} targets` : 'skipped'} published=${did.build?.published ?? 0}/${did.build?.quota ?? 0} dropped=${did.build?.dropped ?? 0} related_links=${did.build?.related_links ?? 0} checked=${did.check?.checked ?? 0} wins=${did.check?.wins ?? 0} strengthened=${did.check?.strengthened ?? 0} undone=${did.check?.undone ?? 0} merged=${did.check?.merged ?? 0} indexnow=${did.check?.indexnow ?? 0} report=${path.relative(root, out)}`;
-  return { report, census, nothing, mode, did, out, root, cfg, stop };
+  return { report, census, nothing, mode, did, out, root, cfg };
 }
 
 async function main() {
@@ -131,10 +128,6 @@ async function main() {
   console.log(r.census);
   if (o['github-output'] && process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `report=${r.out}\nmode=${r.mode}\npublished=${r.did.build?.published ?? 0}\npages_dir=${path.resolve(r.root, r.cfg.output.dir)}\nledger_dir=${path.resolve(r.root, r.cfg.ledger_dir)}\n`);
   if (r.nothing && r.mode !== 'off') throw new NamedStop('NOTHING_DONE', 'no search was found, no page built and no page checked this run; the report above says which source was not read', EXIT.NOTHING);
-  // Every free lane out for 3 runs in a row / 24 h with searches waiting and nothing
-  // published: a named stop (red run that says why), never a silent 0. Before that
-  // it is the NAMED NOTE above. The report, CHECK work and ledger still commit (exit 2).
-  if (r.stop) throw r.stop;
   const keyStop = r.report.notes.find((n) => /NAMED STOP \[FREE_MODEL_KEY_(MISSING|REFUSED)\]/.test(n));
   if (keyStop && !r.did.check?.checked && !r.did.find) throw new NamedStop('FREE_MODEL_KEY', keyStop, EXIT.CREDENTIAL);
 }

@@ -1,5 +1,40 @@
 // Page HTML from a draft. One renderer; the gate reads what it writes.
 import { esc } from './util.mjs';
+import { LIMITS } from './gate.mjs';
+
+const TITLE_SEP = ' — ';
+const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const tidy = (x) => x.replace(/\s+/g, ' ').replace(/^[\s—|:,;-]+|[\s—|:,;-]+$/g, '').trim();
+
+// Cut at a word boundary to at most n characters (never mid-word, never padded).
+function cutWords(x, n) {
+  if (x.length <= n) return x;
+  return tidy(x.slice(0, n + 1).replace(/\s+\S*$/, '')) || x.slice(0, n);
+}
+
+// The title the page carries: "<search first> — <site name>", the site name
+// exactly once, fitted to the 30-65 band. The model's lead is cleaned of the
+// site name; a lead too short to make 30 falls back to the H1; a title over 65
+// has its lead cut at a word boundary. The gate only notes what is left over.
+export function fitTitle(cfg, draft) {
+  const name = cfg.site_name;
+  const strip = (x) => tidy(String(x || '').replace(new RegExp(reEsc(name), 'gi'), ' '));
+  const room = LIMITS.title[1] - name.length - TITLE_SEP.length;
+  let lead = strip(draft.title_lead);
+  const h1 = strip(draft.h1);
+  if ((lead + TITLE_SEP + name).length < LIMITS.title[0] && h1.length > lead.length) lead = h1;
+  if (!lead) lead = h1 || name;
+  if (lead.length > room && room >= 15) lead = cutWords(lead, room);
+  return lead + TITLE_SEP + name;
+}
+
+// A meta description over the limit is cut at a word boundary (never padded).
+export function fitMeta(m) {
+  const s = String(m || '').trim();
+  if (s.length <= LIMITS.meta[1]) return s;
+  const cut = s.slice(0, LIMITS.meta[1] - 1).replace(/\s+\S*$/, '').replace(/[,;:\s]+$/, '');
+  return cut.length >= LIMITS.meta[0] ? cut + '.' : s;
+}
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 export const humanDate = (d) => { const [y, m, day] = d.split('-').map(Number); return `${day} ${MONTHS[m - 1]} ${y}`; };
@@ -18,7 +53,8 @@ export const RELATED_END = '<!-- /search-loop:related -->';
 // draft: { h1, title_lead, meta_description, direct_answer, sections[{heading, paragraphs[]}], faq[{q,a}], facts[{claim, source_url, source_name, verified}] }
 export function render(cfg, { slug, draft, related = [], published, modified }) {
   const url = pageUrl(cfg, slug);
-  const title = `${draft.title_lead} — ${cfg.site_name}`;
+  const title = fitTitle(cfg, draft);
+  draft = { ...draft, meta_description: fitMeta(draft.meta_description) };
   const t = cfg.template || {};
   const og = t.og_image || { url: `${cfg.base_url}/og.png`, width: 1200, height: 630 };
   const facts = (draft.facts || []).filter((f) => f.verified);

@@ -225,17 +225,15 @@ export async function freeChat({ cfg, messages, maxTokens = 3500, apiKey = proce
   return { ok: false, stop: 'NO_FREE_MODEL', rateLimited: limited > 0 || Object.values(laneState.closed).some((v) => /quota|share/.test(v)), reason: `every free lane is out — ${closed.join('; ') || 'no lane answered'} (${attempts.slice(-6).map((a) => `${a.lane}:${String(a.model || '').split('/').pop()}:${a.status}`).join(', ')})`, attempts };
 }
 
-// A NO_FREE_MODEL run is a note while the next run can retry; red only when it lasts.
-// prev = runs.json `no_free_model` ({ since, runs }); returns the new streak (with
-// `red` when it has lasted NO_FREE_MODEL_RED.runs runs in a row or .hours since it
-// began), or null when this run's lanes answered / it published (streak over).
-export const NO_FREE_MODEL_RED = { runs: 3, hours: 24 };
+// A NO_FREE_MODEL run is always a note (the next run retries); the streak is
+// counted so the note can say how long it has lasted. prev = runs.json
+// `no_free_model` ({ since, runs }); returns the new streak, or null when this
+// run's lanes answered / it published (streak over).
 export function noFreeModelStreak(prev, { out, now = new Date() }) {
   if (!out) return null;
   const since = prev?.since && Number.isFinite(Date.parse(prev.since)) ? prev.since : now.toISOString();
   const runs = (Number(prev?.runs) || 0) + 1;
-  const hours = (now.getTime() - Date.parse(since)) / 3600000;
-  return { since, runs, last_at: now.toISOString(), red: runs >= NO_FREE_MODEL_RED.runs || hours >= NO_FREE_MODEL_RED.hours };
+  return { since, runs, last_at: now.toISOString() };
 }
 
 export function parseJsonAnswer(text) {
