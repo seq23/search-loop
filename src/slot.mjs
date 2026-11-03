@@ -55,7 +55,7 @@ Return JSON with exactly these keys:
  "faq": [ {"q": "a related question specific to this title", "a": "${LIMITS.faqAnswer[0]}-${LIMITS.faqAnswer[1]} words"} ],  // exactly 4
  "facts": [ {"claim": "one checkable fact in one sentence", "source_url": "https URL of a specific public page that states it (government, university, professional body, major publication)", "source_name": "publisher name"} ]  // 3-4, specific to this topic
 }
-The whole piece (answer, sections and FAQ) is ${min}-${max} words; aim for about ${Math.round((min + max) / 2)}, never under ${min}.
+The whole piece (answer, sections and FAQ) is ${min}-${max} words; aim for about ${Math.round(min + (max - min) / 3)}: never under ${min}, never over ${max}.
 Hard rules: no statistics, percentages or "studies show" anywhere except inside "facts"; no named people, quotes, client stories, credentials, reviews or testimonials; never first person (no I, me, my): the writer never speaks as the therapist; no promises of outcomes; no diagnosis, treatment claims or medication advice; no filler; second person, short sentences; every heading and paragraph specific to this title, not reusable on a sibling piece.${(avoid.headings || []).length ? `\nNever use these headings (other pages already have them): ${avoid.headings.slice(0, 40).map((h) => `"${h}"`).join(', ')}` : ''}${(avoid.sources || []).length ? `\nDo not cite these pages (other pages already do): ${avoid.sources.slice(0, 20).join(', ')}` : ''}${(avoid.phrases || []).length ? `\nThese phrases already appear on other pages; never use them: ${avoid.phrases.slice(0, 40).map((p) => `"${p}"`).join(', ')}` : ''}${problems ? `\n\nYour previous draft failed these checks; fix every one:\n- ${problems.join('\n- ')}` : ''}` },
   ];
 }
@@ -66,7 +66,7 @@ export function slotProblems(d, slot) {
   const [min, max] = slotWords(slot);
   const n = draftWords(d);
   if (n < min) p.push(`the piece is ${n} words; it must be ${min}-${max}`);
-  if (n > max * 1.15) p.push(`the piece is ${n} words; it must be ${min}-${max}`);
+  if (n > max * 1.25) p.push(`the piece is ${n} words; it must be ${min}-${max}`);
   if (d.faq.length < 3) p.push(`the FAQ has ${d.faq.length} questions; it needs 4`);
   if (d.sections.length < 3) p.push(`only ${d.sections.length} sections`);
   const verified = d.facts.filter((f) => f.verified);
@@ -75,9 +75,12 @@ export function slotProblems(d, slot) {
   if (!d.sections.some((s) => (s.bullets || []).length >= 2)) p.push('no list: give at least one section "bullets" (3-6 short items)');
   const avoidSrc = new Set((slot.avoid?.sources || []).map(String));
   if (verified.length && verified.every((f) => avoidSrc.has(f.source_url))) p.push('every source is one other pages already cite; use sources specific to this topic');
-  const text = [d.direct_answer, ...d.sections.flatMap((s) => [s.heading, ...s.paragraphs]), ...d.faq.flatMap((f) => [f.q, f.a])].join(' \n ');
+  const text = [d.direct_answer, ...d.sections.flatMap((s) => [s.heading, ...s.paragraphs, ...(s.bullets || [])]), ...d.faq.flatMap((f) => [f.q, f.a])].join(' \n ');
+  // The writer's own voice: answer, paragraphs, list items and FAQ answers. Headings and FAQ
+  // questions are the reader asking ("How do I know...?"), and a quoted script is the reader speaking.
+  const voice = [d.direct_answer, ...d.sections.flatMap((s) => [...s.paragraphs, ...(s.bullets || [])]), ...d.faq.map((f) => f.a)].join(' \n ');
   // A script the reader might say, in quotation marks, may use I; the writer's own voice may not.
-  if (FIRST_PERSON.test(text.replace(/["“][^"”]{0,240}["”]/g, ' '))) p.push('first person found (I, me, my); the writer never speaks as the therapist');
+  if (FIRST_PERSON.test(voice.replace(/["“][^"”]{0,300}["”]/g, ' '))) p.push('first person found (I, me, my); the writer never speaks as the therapist');
   if (/\[[^\]]*\]|lorem ipsum|TODO|insert /i.test(text)) p.push('placeholder text');
   if (/\b988\b|not therapy|not a substitute|crisis/i.test(d.direct_answer)) p.push('the direct answer carries a disclaimer or crisis line; the first sentences are the answer only (the page shows its own note)');
   if (slot.base) {
@@ -93,7 +96,7 @@ export function slotProblems(d, slot) {
   return p;
 }
 
-export async function draftSlot(cfg, slot, { chat = freeChat, fetchImpl = fetch, check = null, attempts = MAX_ATTEMPTS } = {}) {
+export async function draftSlot(cfg, slot, { chat = freeChat, fetchImpl = fetch, check = null, attempts = MAX_ATTEMPTS + 1 } = {}) {
   if (!slot?.title) return { ok: false, stop: 'SLOT_INVALID', reason: 'a slot needs a title' };
   const [, max] = slotWords(slot);
   const maxTokens = Math.min(8000, Math.round(max * 2.2) + 1200);

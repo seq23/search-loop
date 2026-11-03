@@ -43,13 +43,17 @@ test('draft-slot sends first person and the site check problems back to the mode
 
 test('draft-slot refuses a thin piece and names the stop when every attempt fails', async () => {
   const thin = () => { const d = fixtureDraft(); d.sections = d.sections.slice(0, 1); return d; };
-  const r = await draftSlot(cfg, slot, { chat: chatWith([thin(), thin(), thin()]), fetchImpl: fetchOk });
+  const r = await draftSlot(cfg, slot, { chat: chatWith([thin(), thin(), thin(), thin()]), fetchImpl: fetchOk });
   assert.equal(r.ok, false);
   assert.equal(r.stop, 'SLOT_DRAFT_REJECTED');
   assert.match(r.reason, /words/);
   const quoted = longDraft((d) => { d.sections[0].paragraphs[0] += ' You might say, "I am not available after six."'; return d; });
   quoted.facts.forEach((f) => { f.verified = true; });
   assert.ok(!slotProblems(quoted, slot).some((p) => /first person/.test(p)), 'a quoted script the reader says is not the writer speaking');
+  const asks = longDraft((d) => { d.faq[0].q = 'How do I know it is time?'; return d; }); asks.facts.forEach((f) => { f.verified = true; });
+  assert.ok(!slotProblems(asks, slot).some((p) => /first person/.test(p)), 'a reader question in the FAQ is not the writer speaking');
+  const own = longDraft((d) => { d.faq[0].a = 'In my sessions I often see this. ' + d.faq[0].a; return d; }); own.facts.forEach((f) => { f.verified = true; });
+  assert.ok(slotProblems(own, slot).some((p) => /first person/.test(p)), 'the writer speaking as the therapist is refused');
   assert.ok(slotProblems(longDraft(), { ...slot, avoid: { headings: ['What should a weekly plan include?'] } }).some((p) => /headings already used/.test(p)));
 });
 
