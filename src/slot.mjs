@@ -8,7 +8,7 @@
 // slots, titles and release time, but its queued bodies were template clones.
 // The engine's writer replaces the bodies, slot for slot.
 //
-// slot = { title, question?, kind?, words?: [min, max], avoid?: { headings: [], phrases: [], sources: [] }, related?: [title] }
+// slot = { title, base?, siblings?, question?, kind?, words?: [min, max], avoid?: { headings: [], phrases: [], sources: [] }, related?: [title] }
 // draftSlot(cfg, slot, { chat, fetchImpl, check }) ->
 //   { ok: true, draft, model, words, attempts } | { ok: false, stop, reason, problems? }
 // `check(draft)` lets the site add its own blocking checks (copy/duplicate share
@@ -38,21 +38,24 @@ export function slotPrompt(cfg, slot, problems) {
   const facts = cfg.health?.real_facts ? `\nReal facts on record (use only these for services): ${JSON.stringify(cfg.health.real_facts)}` : '';
   return [
     { role: 'system', content: `You write one ${slot.kind || 'article'} for ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Voice: ${cfg.voice}. You return ONLY a JSON object, no prose around it.` },
-    { role: 'user', content: `Title (keep it; it was approved): "${slot.title}"
-The real question this piece answers: "${slot.question || slot.title}"
+    { role: 'user', content: `${slot.base ? `Approved base title (keep these words): "${slot.base}". Sibling pieces on the same base already take these angles: ${(slot.siblings || []).map((t) => `"${t}"`).join(', ') || 'none'}. Give this piece its own angle and its own search question, so siblings never compete for the same search.` : `Title (keep it; it was approved): "${slot.title}"`}
+The real question this piece answers: "${slot.question || slot.title}"${slot.base ? ' (sharpen it into one distinct search question for this angle)' : ''}
 Other pieces on the site you may mention by title (do not invent others): ${(slot.related || []).join(' | ') || 'none'}
 The piece ends by inviting the reader to: ${cfg.action?.label || 'get in touch'}.${facts}
 
 Return JSON with exactly these keys:
 {
- "h1": "the approved title, unchanged",
+ "h1": "the approved title, unchanged",${slot.base ? `
+ "angle": "2-7 words that finish the base title after a colon, close to the approved angle \"${String(slot.title).slice(String(slot.base).length).replace(/^[:\s]+/, '')}\" but specific and different from every sibling angle",
+ "question": "the one distinct search question this piece answers",` : ''}
+ "title_lead": "25-45 characters: a whole-phrase short form of the full title for the browser tab, no site name",
  "meta_description": "${LIMITS.meta[0]}-${LIMITS.meta[1]} characters, the plain answer",
- "direct_answer": "${LIMITS.answer[0]}-${LIMITS.answer[1]} words that answer the question outright, first",
+ "direct_answer": "${LIMITS.answer[0]}-${LIMITS.answer[1]} words that answer the question outright, first. The answer only: no disclaimer, no crisis line, no 'reading is not therapy' (the page shows its own note right after the answer)",
  "sections": [ {"heading": "a question a reader would ask about this exact topic, phrased as a question where natural", "paragraphs": ["90-160 words", "..."]} ],  // ${nSections} sections
  "faq": [ {"q": "a related question specific to this title", "a": "${LIMITS.faqAnswer[0]}-${LIMITS.faqAnswer[1]} words"} ],  // exactly 4
  "facts": [ {"claim": "one checkable fact in one sentence", "source_url": "https URL of a specific public page that states it (government, university, professional body, major publication)", "source_name": "publisher name"} ]  // 3-4, specific to this topic
 }
-The whole piece (answer, sections and FAQ) is ${min}-${max} words.
+The whole piece (answer, sections and FAQ) is ${min}-${max} words; aim for about ${Math.round((min + max) / 2)}, never under ${min}.
 Hard rules: no statistics, percentages or "studies show" anywhere except inside "facts"; no named people, quotes, client stories, credentials, reviews or testimonials; never first person (no I, me, my): the writer never speaks as the therapist; no promises of outcomes; no diagnosis, treatment claims or medication advice; no filler; second person, short sentences; every heading and paragraph specific to this title, not reusable on a sibling piece.${(avoid.headings || []).length ? `\nNever use these headings (other pages already have them): ${avoid.headings.slice(0, 40).map((h) => `"${h}"`).join(', ')}` : ''}${(avoid.sources || []).length ? `\nDo not cite these pages (other pages already do): ${avoid.sources.slice(0, 20).join(', ')}` : ''}${(avoid.phrases || []).length ? `\nThese phrases already appear on other pages; never use them: ${avoid.phrases.slice(0, 40).map((p) => `"${p}"`).join(', ')}` : ''}${problems ? `\n\nYour previous draft failed these checks; fix every one:\n- ${problems.join('\n- ')}` : ''}` },
   ];
 }
@@ -71,8 +74,17 @@ export function slotProblems(d, slot) {
   const avoidSrc = new Set((slot.avoid?.sources || []).map(String));
   if (verified.length && verified.every((f) => avoidSrc.has(f.source_url))) p.push('every source is one other pages already cite; use sources specific to this topic');
   const text = [d.direct_answer, ...d.sections.flatMap((s) => [s.heading, ...s.paragraphs]), ...d.faq.flatMap((f) => [f.q, f.a])].join(' \n ');
-  if (FIRST_PERSON.test(text)) p.push('first person found (I, me, my); the writer never speaks as the therapist');
+  // A script the reader might say, in quotation marks, may use I; the writer's own voice may not.
+  if (FIRST_PERSON.test(text.replace(/["“][^"”]{0,240}["”]/g, ' '))) p.push('first person found (I, me, my); the writer never speaks as the therapist');
   if (/\[[^\]]*\]|lorem ipsum|TODO|insert /i.test(text)) p.push('placeholder text');
+  if (/\b988\b|not therapy|not a substitute|crisis/i.test(d.direct_answer)) p.push('the direct answer carries a disclaimer or crisis line; the first sentences are the answer only (the page shows its own note)');
+  if (slot.base) {
+    const angle = String(d.angle || '').trim();
+    const n = angle.split(/\s+/).filter(Boolean).length;
+    if (n < 2 || n > 8) p.push('give "angle": 2-7 words that finish the base title');
+    else if ((slot.siblings || []).some((t) => t.toLowerCase().endsWith(angle.toLowerCase()))) p.push(`the angle "${angle}" is already a sibling's; choose a different one`);
+  }
+  if (!d.title_lead || d.title_lead.length > 48 || d.title_lead.length < 15) p.push('give "title_lead": a 25-45 character whole-phrase short form of the title');
   const heads = new Set((slot.avoid?.headings || []).map((h) => h.toLowerCase().trim()));
   const reused = d.sections.map((s) => s.heading).filter((h) => heads.has(h.toLowerCase().trim()));
   if (reused.length) p.push(`headings already used on other pages: ${reused.join('; ')}`);
@@ -92,7 +104,8 @@ export async function draftSlot(cfg, slot, { chat = freeChat, fetchImpl = fetch,
     if (parsed?.skip) return { ok: false, stop: 'SLOT_SKIPPED', reason: String(parsed.skip).slice(0, 200) };
     const d = cleanDraft(parsed);
     if (!d) { problems = ['the answer was not the JSON object asked for, with every key filled']; continue; }
-    d.h1 = slot.title;
+    if (slot.base) { d.angle = String(parsed.angle || '').trim().replace(/^[:\s]+|[.\s]+$/g, ''); d.question = String(parsed.question || '').trim(); }
+    d.h1 = slot.base && d.angle ? `${slot.base}: ${d.angle}` : slot.title;
     d.facts = await verifyFacts(d.facts, fetchImpl);
     problems = slotProblems(d, slot);
     if (!problems.length && typeof check === 'function') problems = (await check(d)) || [];

@@ -15,6 +15,7 @@ const longDraft = (mut = (d) => d) => {
   const d = fixtureDraft();
   d.sections = [...d.sections, ...d.sections.map((s) => ({ ...s, heading: s.heading.replace('?', ' this month?') }))];
   d.facts = [1, 2, 3].map((n) => ({ claim: `Fact ${n} about planning.`, source_url: `https://en.wikipedia.org/wiki/Planning_${n}`, source_name: 'Wikipedia' }));
+  d.title_lead = 'Plan your week as a founder';
   return mut(JSON.parse(JSON.stringify(d).replace(/\b(I|me|my|mine|myself)\b/g, 'you')));
 };
 const chatWith = (drafts, seen = []) => async ({ messages }) => { seen.push(messages[1].content); const d = drafts.shift(); return { ok: true, answer: JSON.stringify(d), model: 'fake/free' }; };
@@ -46,6 +47,9 @@ test('draft-slot refuses a thin piece and names the stop when every attempt fail
   assert.equal(r.ok, false);
   assert.equal(r.stop, 'SLOT_DRAFT_REJECTED');
   assert.match(r.reason, /words/);
+  const quoted = longDraft((d) => { d.sections[0].paragraphs[0] += ' You might say, "I am not available after six."'; return d; });
+  quoted.facts.forEach((f) => { f.verified = true; });
+  assert.ok(!slotProblems(quoted, slot).some((p) => /first person/.test(p)), 'a quoted script the reader says is not the writer speaking');
   assert.ok(slotProblems(longDraft(), { ...slot, avoid: { headings: ['What should a weekly plan include?'] } }).some((p) => /headings already used/.test(p)));
 });
 
@@ -87,4 +91,15 @@ test('distinct.near_dup tightens the near-duplicate gate between question pages'
   assert.equal(dup(cfg), false);
   assert.equal(dup({ ...cfg, distinct: { near_dup: 0.01 } }), true);
   assert.equal(dup({ ...cfg, distinct: { near_dup: 0.9 } }), false, 'a looser setting never loosens the default');
+});
+
+test('sibling slots: each gets its own angle on the approved base and the answer opens with the answer only', async () => {
+  const withAngle = (angle, mut = (d) => d) => longDraft((d) => mut({ ...d, angle, question: `what are ${angle.toLowerCase()}?` }));
+  const seen = [];
+  const r = await draftSlot(cfg, { ...slot, title: 'Shutdown: Next-Step Reflection', base: 'Shutdown', siblings: ['Shutdown: The Signs in Your Body'] }, {
+    chat: chatWith([withAngle('The Signs in Your Body'), withAngle('What to Do the Day It Happens', (d) => ({ ...d, direct_answer: d.direct_answer + ' Reading is not therapy; call or text 988.' })), withAngle('What to Do the Day It Happens')], seen), fetchImpl: fetchOk });
+  assert.equal(r.ok, true, JSON.stringify(r.problems));
+  assert.equal(r.draft.h1, 'Shutdown: What to Do the Day It Happens');
+  assert.match(seen[1], /already a sibling/);
+  assert.match(seen[2], /answer only/);
 });
