@@ -13,7 +13,7 @@ import { centralDate, slugify, tokenOverlap, shingles, stripTags, sha256, fetchT
 import { intentKey as keyOf } from './find.mjs';
 import { currentCap, liveEnginePages, recordHeld, CAP_DEFAULTS } from './cap.mjs';
 import { corpusFor, matchIntent, matchAnswer, engineAnswers, intentWords, siteWordsOf, answerShingles } from './distinct.mjs';
-import { isProtected, publishedFrozen } from './config.mjs';
+import { isProtected, publishedFrozen, approvalOf } from './config.mjs';
 
 export const DROP_RETRY_DAYS = 28;
 export const MAX_ATTEMPTS = 3; // one draft + two fix passes, then drop
@@ -119,6 +119,36 @@ export function redirectToStrengthen(L, book, target, match, { today, stage, fro
   return rec;
 }
 
+// Approval mode: pages the owners approved go live (copied from the queue to
+// their real route); declined pages leave the queue for good. Nothing else
+// ever moves a queued page into the site.
+export function promoteApproved(cfg, appr, L, book, today, result, notes) {
+  const file = path.join(cfg.root, appr.approvals_file);
+  let list = {};
+  if (fs.existsSync(file)) {
+    try { list = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { notes.push(`NAMED NOTE [APPROVALS_UNREADABLE] ${appr.approvals_file} is not valid JSON (${e.message}); no queued page went live this run`); return; }
+  }
+  const ids = (xs) => new Set((Array.isArray(xs) ? xs : []).map((x) => (typeof x === 'string' ? x : x?.slug)).filter(Boolean));
+  const ok = ids(list.approved); const no = ids(list.declined);
+  let went = 0; let declined = 0;
+  const drop = (src) => { if (cfg.output.format === 'dir-index') fs.rmSync(path.dirname(src), { recursive: true, force: true }); else fs.rmSync(src, { force: true }); };
+  for (const p of book.pages) {
+    if (p.status !== 'pending_approval') continue;
+    const src = path.join(cfg.root, appr.pending_dir, p.rel);
+    if (no.has(p.slug)) { drop(src); p.status = 'declined'; p.declined_at = today; declined++; continue; }
+    if (!ok.has(p.slug)) continue;
+    const dest = path.join(cfg.root, p.rel);
+    if (!fs.existsSync(src)) { notes.push(`NAMED NOTE [APPROVED_PAGE_MISSING] "${p.slug}" is approved but ${appr.pending_dir}/${p.rel} is gone; it stays off the site`); continue; }
+    if (fs.existsSync(dest) || isProtected(cfg, p.rel)) { notes.push(`NAMED NOTE [APPROVED_PATH_TAKEN] "${p.slug}" is approved but ${p.rel} already exists or is protected; it stays in the queue`); continue; }
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(src, dest);
+    drop(src);
+    p.status = 'live'; p.published_at = today; p.approved_at = today;
+    result.published++; went++;
+  }
+  if (went || declined) { L.write('pages', book); notes.push(`BUILD approval: ${went} approved page(s) went live, ${declined} declined page(s) left the queue`); }
+}
+
 export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fetch, chat = freeChat, notes = [] } = {}) {
   const L = ledger(cfg);
   const today = centralDate(now);
@@ -126,7 +156,11 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
   if (!rules.build) { notes.push('BUILD skipped: mode=off'); return result; }
   const book = L.pages();
   book.pages ||= []; book.dropped ||= []; book.redirected ||= [];
-  const publishedToday = book.pages.filter((p) => p.published_at === today).length;
+  const appr = approvalOf(cfg);
+  if (appr) { result.queued = 0; promoteApproved(cfg, appr, L, book, today, result, notes); }
+  const made = () => result.published + (result.queued || 0);
+  // Approval mode: the day's limit counts pages written to the queue, not approvals.
+  const publishedToday = book.pages.filter((p) => (appr ? p.queued_at === today : p.published_at === today)).length;
   const perDay = perDayLimit(cfg, rules);
   const dayLeft = Math.max(0, perDay - publishedToday);
   let capState = currentCap(cfg, L, book);
@@ -151,8 +185,8 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
   let heldStop = false;
   let considered = 0;
   for (const target of queue) {
-    if (result.published >= room) { heldStop = true; break; }
-    if (result.published >= result.quota || result.attempted >= result.quota * 2 + 2 || considered >= result.quota * 6 + 10) break;
+    if (made() >= room) { heldStop = true; break; }
+    if (made() >= result.quota || result.attempted >= result.quota * 2 + 2 || considered >= result.quota * 6 + 10) break;
     considered++;
     // Distinct intent gate, before any model call: same intent as an existing page -> strengthen brief.
     const pre = matchIntent(cfg, target.query, corpus);
@@ -163,7 +197,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     const slug = slugify(target.query);
     const rel = pageRel(cfg, slug);
     const route = cfg.output.url_prefix + slug + (cfg.output.format === 'dir-index' ? '/' : '');
-    if (fs.existsSync(path.join(cfg.root, rel)) || isProtected(cfg, rel)) { book.dropped.push({ query: target.query, at: today, reason: 'path exists or is protected' }); result.dropped++; continue; }
+    if (fs.existsSync(path.join(cfg.root, rel)) || (appr && fs.existsSync(path.join(cfg.root, appr.pending_dir, rel))) || isProtected(cfg, rel)) { book.dropped.push({ query: target.query, at: today, reason: 'path exists or is protected' }); result.dropped++; continue; }
     const related = pickRelated(cfg, index, target.query, { n: 3 });
     let problems = null; let html = null; let draft = null; let gateNotes = [];
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -204,7 +238,8 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
       result.dropped++;
       continue;
     }
-    const full = path.join(cfg.root, rel);
+    // Approval mode: the page goes into the owners' queue, never into the site.
+    const full = appr ? path.join(cfg.root, appr.pending_dir, rel) : path.join(cfg.root, rel);
     fs.mkdirSync(path.dirname(full), { recursive: true });
     fs.writeFileSync(full, html);
     siblings.push({ route, sh: shingles(stripTags(html)) });
@@ -216,7 +251,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     // Never an orphan: link the new page from up to N relevant existing pages
     // (not on a site whose published pages are frozen: those are never edited).
     const linkedFrom = [];
-    const hosts = frozen ? [] : pickRelated(cfg, index, target.query, { n: cfg.related.max_pages_per_new_page, editable: true, menu });
+    const hosts = frozen || appr ? [] : pickRelated(cfg, index, target.query, { n: cfg.related.max_pages_per_new_page, editable: true, menu });
     for (const h of hosts) {
       const file = path.join(cfg.root, h.rel);
       const before = fs.readFileSync(file, 'utf8');
@@ -226,11 +261,16 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
       linkedFrom.push({ rel: h.rel, route: h.route, before_hash: sha256(before), after_hash: sha256(after) });
     }
     result.related_links += linkedFrom.length;
+    if (appr) {
+      book.pages.push({ slug, query: target.query, score: target.score, signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: null, queued_at: today, status: 'pending_approval', pending_rel: path.posix.join(appr.pending_dir, rel), hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: [], checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
+      result.queued++;
+      continue;
+    }
     book.pages.push({ slug, query: target.query, score: target.score, signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: today, status: 'live', hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: linkedFrom, checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
     result.published++;
     if (gateNotes.length) result.noted = (result.noted || 0) + 1;
   }
-  if (!heldStop && room < dayLeft && result.published >= room && queue.length > considered) heldStop = true;
+  if (!heldStop && room < dayLeft && made() >= room && queue.length > considered) heldStop = true;
   return finish();
   function finish() {
     if (heldStop || room === 0) {
@@ -240,10 +280,11 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     }
     if (result.skipped_same_intent) notes.push(`BUILD distinct gate: ${result.skipped_same_intent} search(es) had the same intent as an existing page and were skipped (published pages are frozen on this site, so no strengthen brief)`);
     if (frozen && result.published) notes.push(`BUILD: published pages are frozen on this site, so no existing page was edited to link the ${result.published} new page(s); link them from the site's own build or nav`);
+    if (appr && result.queued) notes.push(`BUILD approval mode: ${result.queued} new page(s) written to the owners' queue (${appr.pending_dir}); none goes live until its slug is approved in ${appr.approvals_file}`);
     if (result.redirected) notes.push(`BUILD distinct gate: ${result.redirected} search(es) had the same intent as an existing page and became strengthen briefs, not new pages (pages.json "redirected")`);
     L.write('pages', book);
     if (result.noted) notes.push(`BUILD gate notes (not blocking): ${result.noted} published page(s) are outside a length or style aim; each is listed under gate_notes in pages.json`);
-    if (!result.published && !result.stopped && result.quota) notes.push(`BUILD published 0 of quota ${result.quota}: ${result.dropped} draft(s) failed the gate and were dropped; ${result.model_failed || 0} got no answer from the free model and stay queued`);
+    if (!made() && !result.stopped && result.quota) notes.push(`BUILD published 0 of quota ${result.quota}: ${result.dropped} draft(s) failed the gate and were dropped; ${result.model_failed || 0} got no answer from the free model and stay queued`);
     return result;
   }
 }

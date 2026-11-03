@@ -77,6 +77,7 @@ The week report says: `published`, `held_by_cap`, `redirected` (with the existin
 | `cap` | no | `max_live_pages` (null = start from the site's distinct live engine pages, at least `start_pages` 20), `grow_share` 0.1, `min_pages` 10, `max_per_day` 10 (≤ 30). The old `pace` key is retired and ignored |
 | `distinct` | no | same-intent thresholds: `jaccard` 0.6, `containment_min_words` 3, `same_answer` 0.5; `sitemap_files` (default every `sitemap*.xml` at the root) |
 | `published_pages_frozen` | no | `true` = never modify, redirect, merge, unpublish or undo a published page (always on for Horse and Hicks) |
+| `approval` | no | `{ "new_pages": true }` = approval mode: BUILD writes each new page to `approval.pending_dir` (default `<ledger_dir>/pending`, the owners' queue) with `pages.json` status `pending_approval`, never into the site and never linked from it; a page goes live only when its slug is under `approved` in `approval.approvals_file` (default `<ledger_dir>/approvals.json`, `{ "approved": [slug], "declined": [slug] }`), and a declined page leaves the queue. The day's limit counts queued pages. |
 | `menu_pages_need_approval` | no | `true` = never edit menu pages (`menu_pages[]` or the homepage `<nav>` links) |
 | `menu_pages` | no | explicit list of menu routes |
 | `health_gate` | no | `none` (default), `health`, `dental`; with `health.real_facts` `{services[], hours}` |

@@ -574,3 +574,43 @@ test('a free model that never answers cannot hang the run: request timeout, call
     assert.equal(calls, n, 'no request after the budget');
   } finally { delete process.env.GEMINI_API_KEY; startClock({}); resetLanes(); }
 });
+
+test('approval mode: an unapproved page never goes live; approved goes live, declined leaves the queue', async () => {
+  const root = site({ cfg: { approval: { new_pages: true } } });
+  const before = fs.readdirSync(root).sort();
+  const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch({ gscRows: [{ keys: ['how to plan my week as a founder', 'https://example.com/weekly-planning/'], clicks: 0, impressions: 40, position: 12 }] }), chat: distinctChat() });
+  const book = () => JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pages.json'))).pages;
+  const queued = book();
+  assert.ok(queued.length >= 2, `queued: ${r.report.notes.join(' | ')}`);
+  assert.equal(r.did.build.published, 0, 'nothing published without approval');
+  for (const p of queued) {
+    assert.equal(p.status, 'pending_approval');
+    assert.ok(!fs.existsSync(path.join(root, p.rel)), `${p.rel} must not be in the site`);
+    assert.ok(fs.existsSync(path.join(root, p.pending_rel)), `${p.pending_rel} is in the queue`);
+  }
+  assert.deepEqual(fs.readdirSync(root).filter((f) => !before.includes(f)).sort(), ['data'], 'only the ledger and queue are written');
+  assert.ok(!queued.some((p) => p.linked_from.length), 'no existing page links to an unapproved page');
+  // a later run with no approvals still publishes nothing
+  const r2 = await run({ root, now: new Date('2026-11-03T15:00:00Z'), 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: distinctChat() });
+  assert.equal(r2.did.build.published, 0);
+  for (const p of book().filter((x) => x.status === 'pending_approval')) assert.ok(!fs.existsSync(path.join(root, p.rel)));
+  // owners approve one and decline one
+  const [ok, no] = queued;
+  fs.writeFileSync(path.join(root, 'data/search-loop/approvals.json'), JSON.stringify({ approved: [ok.slug], declined: [{ slug: no.slug }] }));
+  const r3 = await run({ root, now: new Date('2026-11-04T15:00:00Z'), 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: distinctChat() });
+  assert.equal(r3.did.build.published, 1);
+  const after = book();
+  assert.equal(after.find((p) => p.slug === ok.slug).status, 'live');
+  assert.ok(fs.existsSync(path.join(root, ok.rel)));
+  assert.equal(after.find((p) => p.slug === no.slug).status, 'declined');
+  assert.ok(!fs.existsSync(path.join(root, no.rel)) && !fs.existsSync(path.join(root, no.pending_rel)));
+  for (const p of after.filter((x) => x.status === 'pending_approval')) assert.ok(!fs.existsSync(path.join(root, p.rel)), `${p.slug} unapproved, never live`);
+});
+
+test('approval mode config is checked', async () => {
+  const { checkConfig } = await import('../src/config.mjs');
+  const base = JSON.parse(JSON.stringify(FIXTURE_CONFIG_RAW));
+  assert.ok(checkConfig({ ...base, approval: { new_pages: 'yes' } }).some((m) => /approval.new_pages/.test(m)));
+  assert.ok(checkConfig({ ...base, approval: { new_pages: true, pending_dir: '../x' } }).some((m) => /approval.pending_dir/.test(m)));
+  assert.deepEqual(checkConfig({ ...base, approval: { new_pages: true } }), checkConfig(base));
+});
