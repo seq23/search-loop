@@ -83,7 +83,7 @@ export function corpusFor(cfg, index, book) {
   };
   for (const p of book?.pages || []) if (p.status === 'live') add(p.route, [p.query], 'engine', { slug: p.slug });
   for (const p of index || []) add(p.route, [p.title, p.h1], 'page', { protected: p.protected });
-  // v1.3.1: pages a site has already scheduled but not yet published (an editorial calendar) count as
+  // v1.5.0: pages a site has already scheduled but not yet published (an editorial calendar) count as
   // existing, so the loop never writes a question page on a search a calendar post will answer.
   for (const r of reservedOf(cfg)) if (!seen.has(r.route)) add(r.route, [r.title, r.question], 'reserved');
   for (const r of sitemapRoutes(cfg)) if (!seen.has(r) && !seen.has(r.replace(/\/$/, '')) && !seen.has(r + '/')) add(r, [slugWords(r)], 'sitemap');

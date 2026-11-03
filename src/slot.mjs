@@ -1,4 +1,4 @@
-// SLOT DRAFT (v1.3.1): write the material for one slot a site already has (an
+// SLOT DRAFT (v1.5.0): write the material for one slot a site already has (an
 // editorial-calendar entry with its own title and date) on the same free lanes
 // and fix loop as BUILD, and hand it back. It never publishes, never writes a
 // page, never touches the ledger: the site renders the draft into its own
@@ -51,7 +51,7 @@ Return JSON with exactly these keys:
  "title_lead": "25-45 characters: a whole-phrase short form of the full title for the browser tab, no site name",
  "meta_description": "${LIMITS.meta[0]}-${LIMITS.meta[1]} characters, the plain answer",
  "direct_answer": "${LIMITS.answer[0]}-${LIMITS.answer[1]} words that answer the question outright, first. The answer only: no disclaimer, no crisis line, no 'reading is not therapy' (the page shows its own note right after the answer)",
- "sections": [ {"heading": "a question a reader would ask about this exact topic, phrased as a question where natural", "paragraphs": ["90-160 words", "..."]} ],  // ${nSections} sections
+ "sections": [ {"heading": "a question a reader would ask about this exact topic, phrased as a question where natural", "paragraphs": ["90-160 words", "..."], "bullets": ["optional: 3-6 short list items"]} ],  // at least one section has "bullets"  // ${nSections} sections
  "faq": [ {"q": "a related question specific to this title", "a": "${LIMITS.faqAnswer[0]}-${LIMITS.faqAnswer[1]} words"} ],  // exactly 4
  "facts": [ {"claim": "one checkable fact in one sentence", "source_url": "https URL of a specific public page that states it (government, university, professional body, major publication)", "source_name": "publisher name"} ]  // 3-4, specific to this topic
 }
@@ -70,7 +70,9 @@ export function slotProblems(d, slot) {
   if (d.faq.length < 3) p.push(`the FAQ has ${d.faq.length} questions; it needs 4`);
   if (d.sections.length < 3) p.push(`only ${d.sections.length} sections`);
   const verified = d.facts.filter((f) => f.verified);
-  if (verified.length < 2) p.push(`only ${verified.length} sources answered 200 when fetched; give 3-4 real, specific https pages`);
+  const distinct = new Set(verified.map((f) => f.source_url.replace(/[#?].*$/, '').replace(/\/$/, '')));
+  if (distinct.size < 2) p.push(`only ${distinct.size} distinct sources answered 200 when fetched; give 3-4 real, specific https pages from at least 2 different sources`);
+  if (!d.sections.some((s) => (s.bullets || []).length >= 2)) p.push('no list: give at least one section "bullets" (3-6 short items)');
   const avoidSrc = new Set((slot.avoid?.sources || []).map(String));
   if (verified.length && verified.every((f) => avoidSrc.has(f.source_url))) p.push('every source is one other pages already cite; use sources specific to this topic');
   const text = [d.direct_answer, ...d.sections.flatMap((s) => [s.heading, ...s.paragraphs]), ...d.faq.flatMap((f) => [f.q, f.a])].join(' \n ');

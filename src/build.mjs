@@ -40,7 +40,7 @@ export function pickRelated(cfg, index, query, { exclude = new Set(), n = 3, edi
 
 export function draftPrompt(cfg, target, related, problems) {
   const facts = cfg.health?.real_facts ? `\nReal facts on record (use only these for services/hours): ${JSON.stringify(cfg.health.real_facts)}` : '';
-  // v1.3.1: a search that names one of the site's places gets real local substance, never a city-name swap.
+  // v1.5.0: a search that names one of the site's places gets real local substance, never a city-name swap.
   const places = cfg.local ? [cfg.local.city, ...(cfg.local.neighbourhoods || [])].filter(Boolean) : [];
   const place = places.find((pl) => String(target.query).toLowerCase().includes(String(pl).toLowerCase()));
   const local = place && cfg.local?.substance ? `\nThis is a local page for ${place}. ${cfg.local.substance}` : '';
@@ -56,9 +56,9 @@ Return JSON with exactly these keys:
  "title_lead": "the search first, ${LIMITS.title[0] - cfg.site_name.length - 3 > 10 ? LIMITS.title[0] - cfg.site_name.length - 3 : 15}-${LIMITS.title[1] - cfg.site_name.length - 3} characters, no site name",
  "meta_description": "${LIMITS.meta[0]}-${LIMITS.meta[1]} characters, plain answer to the search",
  "direct_answer": "${LIMITS.answer[0]}-${LIMITS.answer[1]} words that answer the search outright and define it in the form '<subject> is ...'",
- "sections": [ {"heading": "a question people ask about this", "paragraphs": ["120-180 words", "..."]} ],  // 4-5 sections, 650+ words in total
+ "sections": [ {"heading": "a question people ask about this", "paragraphs": ["120-180 words", "..."], "bullets": ["optional: 3-6 short list items"]} ],  // 4-5 sections, 650+ words in total; at least one section has "bullets"
  "faq": [ {"q": "a related question", "a": "${LIMITS.faqAnswer[0]}-${LIMITS.faqAnswer[1]} words"} ],  // exactly 4
- "facts": [ {"claim": "one checkable fact in one sentence", "source_url": "https URL of a well-known public page that states it (government, university, major publication, Wikipedia)", "source_name": "publisher name"} ]  // 2-4
+ "facts": [ {"claim": "one checkable fact in one sentence", "source_url": "https URL of a well-known public page that states it (government, university, major publication, Wikipedia)", "source_name": "publisher name"} ]  // 2-4, from at least 2 different sources
 }
 If this search does not fit the audience or the site (a different meaning of the words, someone else's brand), return {"skip":"why"} instead.
 Hard rules: no statistics, percentages or "studies show" anywhere except inside "facts"; no named people, quotes, doctors, credentials, reviews, testimonials or star ratings; no promises of outcomes${cfg.health_gate !== 'none' ? '; no treatment or outcome claims, never "painless", no medical advice, no hours or services beyond the real facts' : ''}; no filler; second person, short sentences.${problems ? `\n\nYour previous draft failed these checks; fix every one:\n- ${problems.join('\n- ')}` : ''}` },
@@ -73,7 +73,7 @@ export function cleanDraft(d) {
   const str = (x) => (typeof x === 'string' ? x.trim() : '');
   const out = {
     h1: str(d.h1), title_lead: str(d.title_lead), meta_description: str(d.meta_description), direct_answer: str(d.direct_answer),
-    sections: (Array.isArray(d.sections) ? d.sections : []).map((s) => ({ heading: str(s?.heading), paragraphs: (Array.isArray(s?.paragraphs) ? s.paragraphs : []).map(str).filter(Boolean) })).filter((s) => s.heading && s.paragraphs.length),
+    sections: (Array.isArray(d.sections) ? d.sections : []).map((s) => ({ heading: str(s?.heading), paragraphs: (Array.isArray(s?.paragraphs) ? s.paragraphs : []).map(str).filter(Boolean), bullets: (Array.isArray(s?.bullets) ? s.bullets : []).map(str).filter(Boolean).slice(0, 8) })).filter((s) => s.heading && s.paragraphs.length),
     faq: (Array.isArray(d.faq) ? d.faq : []).map((f) => ({ q: str(f?.q), a: str(f?.a) })).filter((f) => f.q && f.a).slice(0, 6),
     facts: (Array.isArray(d.facts) ? d.facts : []).map((f) => ({ claim: str(f?.claim), source_url: str(f?.source_url), source_name: str(f?.source_name) })).filter((f) => f.claim && /^https:\/\//.test(f.source_url)).slice(0, 4),
   };

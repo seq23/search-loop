@@ -129,7 +129,7 @@ async function main() {
     return;
   }
   if (cmd === 'draft-slot') {
-    // v1.3.1: the material for one calendar slot, as JSON; never published, no ledger.
+    // v1.5.0: the material for one calendar slot, as JSON; never published, no ledger.
     const root = path.resolve(o.root || process.cwd());
     const { cfg, problems } = loadConfig(o.config || 'search-loop.config.json', root);
     if (problems.length) throw new NamedStop('CONFIG_INVALID', problems.join('; '), EXIT.PROBLEMS);
