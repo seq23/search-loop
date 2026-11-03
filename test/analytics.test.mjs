@@ -19,11 +19,23 @@ const freeZone = ({ beaconHtml, weekLoads, dayRefs = [] }) => async (u, init = {
 };
 
 test('free zone: bot reads are counted even though the referrer field is refused', async () => {
-  const r = await cloudflareDay({ zoneName: 'example.org', token: 't\n', accountId: 'a', fetchImpl: freeZone({ beaconHtml: false, weekLoads: 1 }) });
+  const r = await cloudflareDay({ zoneName: 'example.org', token: 't\n', accountId: 'a', fetchImpl: freeZone({ beaconHtml: false, weekLoads: 0 }) });
   assert.equal(r.notRead, undefined);
   assert.equal(r.ai_bot_hits.total, 7, 'only AI bots count');
   assert.equal(r.ai_visitors, undefined);
-  assert.match(r.visitorsNotRead, /beacon is not on the site/, 'no beacon is "not read", never 0');
+  assert.match(r.visitorsNotRead, /beacon is not on the site/, 'no beacon at all is "not read", never 0');
+  assert.match(r.visitorsNotRead, /no page loads in 7 days/);
+});
+
+// A RUM page load can only exist if the beacon fired, so one is proof it is installed. A quiet site
+// (few loads) must still report a true 0, and the home-page probe can fail on its own: Cloudflare
+// may serve a CI runner a challenge page instead of the HTML.
+test('free zone: one Web Analytics page load proves the beacon, even when the home page probe fails', async () => {
+  const r = await cloudflareDay({ zoneName: 'example.org', token: 't', accountId: 'a', fetchImpl: freeZone({ beaconHtml: false, weekLoads: 1 }) });
+  assert.equal(r.visitorsNotRead, undefined, 'a page load proves the beacon is installed');
+  assert.equal(r.ai_visitors.total, 0, 'a beacon that is on but quiet reports a true 0');
+  assert.equal(r.ai_visitors.source, 'web-analytics');
+  assert.equal(r.ai_bot_hits.total, 7);
 });
 
 test('free zone with the Web Analytics beacon: AI-referral visits come from Web Analytics', async () => {
@@ -37,4 +49,18 @@ test('the week report carries the bot number while visits say why they were not 
   const daily = { days: { '2026-11-03': { ai_bot_hits: { total: 7 }, ai_visitors_not_read: 'beacon is not on the site' } } };
   assert.equal(sumDaily(daily, 'ai_bot_hits', '2026-11-03'), 7);
   assert.match(sumDaily(daily, 'ai_visitors', '2026-11-03'), /^not read: beacon is not on the site/);
+});
+
+test('a not-read reason is the newest day\'s, never an older engine\'s wording', () => {
+  const daily = { days: {
+    '2026-11-01': { not_read: 'no free analytics source configured for this site (analytics.ai_referrals)' },
+    '2026-11-02': { not_read: 'no free analytics source configured for this site (analytics.ai_referrals)' },
+    '2026-11-03': { ai_bot_hits: { total: 322 }, ai_visitors_not_read: 'turn on Web Analytics for example.org' },
+  } };
+  assert.equal(sumDaily(daily, 'ai_bot_hits', '2026-11-03'), 322);
+  assert.equal(sumDaily(daily, 'ai_visitors', '2026-11-03'), 'not read: turn on Web Analytics for example.org');
+});
+
+test('no day collected at all still says so', () => {
+  assert.equal(sumDaily({ days: {} }, 'ai_visitors', '2026-11-03'), 'not read: no day this week was collected');
 });

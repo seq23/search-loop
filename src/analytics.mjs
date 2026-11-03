@@ -42,10 +42,14 @@ async function cf(pathOrQuery, { token, fetchImpl, body }) {
 //   - AI-referral visits: the zone's clientRefererHost where the plan has it; on a free zone (no
 //     referer field) Cloudflare Web Analytics (account rumPageloadEventsAdaptiveGroups, refererHost),
 //     counted only when its beacon is really on the site: in the live home page's HTML, or at least
-//     RUM_MIN_WEEK page loads in 7 days. Otherwise "not read" with the reason, never a false 0.
+//     RUM_MIN_WEEK page loads in 7 days. A RUM page load can only exist if the beacon fired, so one
+//     is already proof it is installed; the home-page probe is a second chance for a site so quiet
+//     it has none (and it can fail on its own: Cloudflare may serve a runner a challenge instead of
+//     the page). Only no evidence at all is "not read" with the reason, never a false 0. A beacon
+//     that is on but quiet reports a true 0.
 //     (Zone page views are no yardstick: on these sites they are mostly bots.)
 // Returns { ai_visitors | visitorsNotRead, ai_bot_hits | botsNotRead, window } or { notRead } when nothing is readable.
-export const RUM_MIN_WEEK = 7;
+export const RUM_MIN_WEEK = 1;
 const NO_FIELD = /does not have access to the field/i;
 export async function cloudflareDay({ zoneName, token = process.env.CLOUDFLARE_API_TOKEN, accountId = process.env.CLOUDFLARE_ACCOUNT_ID, fetchImpl = fetch, now = new Date() }) {
   token = String(token || '').trim();
@@ -99,7 +103,7 @@ export async function cloudflareDay({ zoneName, token = process.env.CLOUDFLARE_A
       let onHome = false;
       try { const home = await fetchImpl(`https://${zoneName}/`, { headers: { 'user-agent': 'Mozilla/5.0 (compatible; search-loop analytics check)' } }); onHome = /cloudflareinsights\.com\/beacon/i.test(await home.text()); } catch { onHome = false; }
       if (rum.error) out.visitorsNotRead = `this zone's plan has no referrer field, and Web Analytics refused the query: ${rum.error}`;
-      else if (!onHome && beacon < RUM_MIN_WEEK) out.visitorsNotRead = `this zone's plan has no referrer field, and the Cloudflare Web Analytics beacon is not on the site (not in the home page, ${beacon} page load(s) in 7 days): turn on Web Analytics for ${bare}`;
+      else if (!onHome && beacon < RUM_MIN_WEEK) out.visitorsNotRead = `this zone's plan has no referrer field, and the Cloudflare Web Analytics beacon is not on the site (not in the home page, no page loads in 7 days): turn on Web Analytics for ${bare}`;
       else out.ai_visitors = { ...tally(acct.day, 'refererHost', 'requestPath'), source: 'web-analytics' };
     }
     if (out.ai_visitors === undefined && out.ai_bot_hits === undefined) return { notRead: `${out.visitorsNotRead}; ${out.botsNotRead}` };

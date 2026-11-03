@@ -13,13 +13,20 @@ export const STATES = ['running', 'slow', 'off', 'stopped'];
 
 const within7 = (d, today) => d && daysBetween(d, today) >= 0 && daysBetween(d, today) < 7;
 
+// The reason a key was not read is the NEWEST day's reason, never the oldest: an older engine's
+// wording lingers in the ledger for up to 7 days and would otherwise mask the real, current cause
+// (3 Nov 2026: "no free analytics source configured" was still reported days after the source was
+// configured, hiding the beacon reason underneath).
 export function sumDaily(daily, key, today) {
-  let total = 0; let read = 0; const why = new Set();
+  let total = 0; let read = 0; const why = [];
   for (const [d, v] of Object.entries(daily?.days || {})) {
     if (!within7(d, today)) continue;
-    if (v[key] && typeof v[key].total === 'number') { total += v[key].total; read++; } else if (v[`${key}_not_read`] || v.not_read) why.add(v[`${key}_not_read`] || v.not_read);
+    if (v[key] && typeof v[key].total === 'number') { total += v[key].total; read++; } else if (v[`${key}_not_read`] || v.not_read) why.push({ d, text: v[`${key}_not_read`] || v.not_read });
   }
-  if (!read) return `not read: ${[...why][0] || 'no day this week was collected'}`;
+  if (!read) {
+    const newest = why.sort((a, b) => (a.d < b.d ? 1 : a.d > b.d ? -1 : 0))[0];
+    return `not read: ${newest?.text || 'no day this week was collected'}`;
+  }
   return total;
 }
 
