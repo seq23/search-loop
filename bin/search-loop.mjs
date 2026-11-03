@@ -10,7 +10,8 @@ import { find } from '../src/find.mjs';
 import { build } from '../src/build.mjs';
 import { check } from '../src/check.mjs';
 import { buildReport, checkReport } from '../src/report.mjs';
-import { currentPace } from '../src/pace.mjs';
+import { currentCap, impressionWindows, nextCap } from '../src/cap.mjs';
+import { perDayLimit } from '../src/build.mjs';
 import { ledger } from '../src/ledger.mjs';
 import { NamedStop, EXIT, isoWeek, writeJson, startClock, progress, runClock } from '../src/util.mjs';
 import { selfTest } from '../src/self-test.mjs';
@@ -66,6 +67,17 @@ export async function run(opts) {
     for (const [k, v] of Object.entries(did.find.sources)) if (String(v).startsWith('not read')) notes.push(`FIND ${k}: ${v}`);
   } else if (stage === 'find') notes.push(`FIND skipped: mode=${mode}`);
 
+  // CAP weekly, before BUILD: the per-site cap moves only with Google impressions.
+  if ((stage === 'auto' || stage === 'build') && rulesFor(mode).build) {
+    progress('cap', 'weekly cap check');
+    const cur = currentCap(cfg, L, L.pages());
+    const nc = cur.last_eval_week === isoWeek(now) ? { cap: cur, evaluated: false } : nextCap(cfg, cur, await impressionWindows(cfg, { now, fetchImpl: opts.fetchImpl }), now);
+    if (nc.evaluated) {
+      L.write('cap', nc.cap);
+      notes.push(nc.held ? `NAMED NOTE [CAP_HELD_NO_DATA] cap ${nc.reason}` : `cap: ${nc.reason}`);
+    } else if (!L.read('cap', null)) L.write('cap', cur);
+  }
+
   // BUILD daily.
   if (stage === 'auto' || stage === 'build') {
     progress('build', 'start');
@@ -93,16 +105,15 @@ export async function run(opts) {
     }
   }
   progress('report', 'writing');
-  const pace = currentPace(cfg, L).per_day;
   const rules = rulesFor(mode);
-  const effectivePace = !rules.build ? 0 : rules.build_cap == null ? pace : Math.min(pace, rules.build_cap);
-  const nothing = !did.find && !(did.build?.published) && !(did.build?.attempted) && !(did.check?.checked) && !(did.check?.indexnow) && !did.check?.skipped;
+  const effectivePace = perDayLimit(cfg, rules);
+  const nothing = !did.find && !(did.build?.published) && !(did.build?.attempted) && !(did.build?.redirected) && !(did.build?.held) && !(did.check?.checked) && !(did.check?.indexnow) && !did.check?.skipped;
   const report = buildReport(cfg, { mode, effectivePace, notes, stopped: Boolean(did.build?.stopped), now, check: did.check || {} });
   const rp = checkReport(report);
   if (rp.length) throw new NamedStop('REPORT_SHAPE', rp.join('; '), EXIT.PROBLEMS);
   const out = path.resolve(root, opts['report-out'] || path.join(cfg.ledger_dir, 'search-loop-week.json'));
   writeJson(out, report);
-  const census = `search-loop ${cfg.site}: mode=${mode} find=${did.find ? `${did.find.targets} targets` : 'skipped'} published=${did.build?.published ?? 0}/${did.build?.quota ?? 0} dropped=${did.build?.dropped ?? 0} related_links=${did.build?.related_links ?? 0} checked=${did.check?.checked ?? 0} wins=${did.check?.wins ?? 0} strengthened=${did.check?.strengthened ?? 0} undone=${did.check?.undone ?? 0} merged=${did.check?.merged ?? 0} indexnow=${did.check?.indexnow ?? 0} report=${path.relative(root, out)}`;
+  const census = `search-loop ${cfg.site}: mode=${mode} find=${did.find ? `${did.find.targets} targets` : 'skipped'} published=${did.build?.published ?? 0}/${did.build?.quota ?? 0} held_by_cap=${did.build?.held ?? 0} redirected=${did.build?.redirected ?? 0} dropped=${did.build?.dropped ?? 0} related_links=${did.build?.related_links ?? 0} checked=${did.check?.checked ?? 0} wins=${did.check?.wins ?? 0} strengthened=${did.check?.strengthened ?? 0} undone=${did.check?.undone ?? 0} merged=${did.check?.merged ?? 0} indexnow=${did.check?.indexnow ?? 0} report=${path.relative(root, out)}`;
   return { report, census, nothing, mode, did, out, root, cfg };
 }
 

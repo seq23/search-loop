@@ -18,6 +18,9 @@
     "wins",
     "undone",
     "merged",
+    "held_by_cap",
+    "redirected",
+    "cap",
     "notes",
     "run_url"
   ],
@@ -66,7 +69,7 @@
     "pace": {
       "type": "integer",
       "minimum": 0,
-      "description": "pages per day allowed today after the mode cap (0 when off)"
+      "description": "pages the engine may publish per day after the mode (cap.max_per_day, 3 in slow, 0 when off); a run guard, not a pace: the outcome-gated cap is in cap"
     },
     "ai_visitors": {
       "oneOf": [
@@ -118,6 +121,63 @@
     "merged": {
       "type": "integer",
       "minimum": 0
+    },
+    "held_by_cap": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "pages the day's limit allowed in the last 7 days that the per-site cap held back (their searches stay queued)"
+    },
+    "redirected": {
+      "type": "array",
+      "description": "searches in the last 7 days with the same intent as an existing page: no new page, a strengthen brief for that page instead",
+      "items": {
+        "type": "object",
+        "required": [
+          "query",
+          "strengthen"
+        ],
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "strengthen": {
+            "type": "string",
+            "description": "the existing page's URL"
+          },
+          "matched_by": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "cap": {
+      "type": "object",
+      "required": [
+        "max_live_pages",
+        "why"
+      ],
+      "description": "the per-site cap on live engine pages and why it is where it is",
+      "properties": {
+        "max_live_pages": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "live": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "room": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "why": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     },
     "notes": {
       "type": "array",

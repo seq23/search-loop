@@ -27,7 +27,7 @@
     "https://sprylabs.gumroad.com"
   ],
   "mode": "normal",
-  "pace": { "start_per_day": 10, "step_per_week": 5, "cap": 30 },
+  "cap": { "max_live_pages": null, "max_per_day": 10 },
   "menu_pages_need_approval": false,
   "health_gate": "none",
   "protected_paths": [

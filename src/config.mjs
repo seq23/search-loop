@@ -2,6 +2,7 @@
 // what a valid config is; validators/validate.mjs and the CLI both call it.
 import fs from 'node:fs';
 import path from 'node:path';
+import { CAP_DEFAULTS, DISTINCT_DEFAULTS } from './defaults.mjs';
 
 export const CONFIG_SCHEMA = 'search-loop-config-v1';
 export const HEALTH_GATES = ['none', 'health', 'dental'];
@@ -9,8 +10,10 @@ export const PAGE_FORMATS = ['dir-index', 'html-file'];
 
 export const DEFAULTS = {
   mode: 'normal',
-  pace: { start_per_day: 10, step_per_week: 5, cap: 30, min_per_day: 2, indexed_share_to_grow: 0.5, index_window_days: 14 },
+  cap: CAP_DEFAULTS,
+  distinct: DISTINCT_DEFAULTS,
   menu_pages_need_approval: false,
+  published_pages_frozen: false,
   health_gate: 'none',
   protected_paths: [],
   shares_audience_with: [],
@@ -49,12 +52,21 @@ export function checkConfig(c) {
   need(HEALTH_GATES.includes(c.health_gate ?? 'none'), `health_gate must be ${HEALTH_GATES.join(' | ')}`);
   need(typeof (c.menu_pages_need_approval ?? false) === 'boolean', 'menu_pages_need_approval must be true or false');
   need(Array.isArray(c.protected_paths ?? []), 'protected_paths must be a list');
+  need(typeof (c.published_pages_frozen ?? false) === 'boolean', 'published_pages_frozen must be true or false');
   const o = c.output || {};
   need(typeof o.dir === 'string' && o.dir && !o.dir.startsWith('/') && !o.dir.includes('..'), 'output.dir: a relative directory for new pages');
   need(PAGE_FORMATS.includes(o.format), `output.format must be ${PAGE_FORMATS.join(' | ')}`);
   need(typeof o.url_prefix === 'string' && o.url_prefix.startsWith('/') && o.url_prefix.endsWith('/'), 'output.url_prefix like "/questions/"');
-  const pace = { ...DEFAULTS.pace, ...(c.pace || {}) };
-  need(pace.cap <= 30 && pace.start_per_day <= pace.cap && pace.start_per_day >= 1, 'pace: 1 <= start_per_day <= cap <= 30');
+  // `pace` (the old fixed 10/day +5/week) is retired in v1.3.0; an old key is ignored.
+  const cap = { ...CAP_DEFAULTS, ...(c.cap || {}) };
+  need(cap.max_live_pages === null || (Number.isInteger(cap.max_live_pages) && cap.max_live_pages >= 1), 'cap.max_live_pages: null (start from the site\'s distinct live pages) or a whole number >= 1');
+  need(Number.isInteger(cap.max_per_day) && cap.max_per_day >= 1 && cap.max_per_day <= 30, 'cap.max_per_day: 1-30 (a run guard for the shared free lanes)');
+  need(typeof cap.grow_share === 'number' && cap.grow_share > 0 && cap.grow_share <= 0.5, 'cap.grow_share: above 0, at most 0.5');
+  need(Number.isInteger(cap.min_pages) && cap.min_pages >= 0 && Number.isInteger(cap.start_pages) && cap.start_pages >= cap.min_pages, 'cap: 0 <= min_pages <= start_pages, whole numbers');
+  const dist = { ...DISTINCT_DEFAULTS, ...(c.distinct || {}) };
+  need([dist.jaccard, dist.same_answer].every((x) => typeof x === 'number' && x > 0 && x <= 1), 'distinct.jaccard and distinct.same_answer: above 0, at most 1');
+  need(Number.isInteger(dist.containment_min_words) && dist.containment_min_words >= 2, 'distinct.containment_min_words: a whole number >= 2');
+  need(dist.sitemap_files === null || Array.isArray(dist.sitemap_files), 'distinct.sitemap_files: null (every sitemap*.xml at the root) or a list of files');
   if (c.action?.url && c.allowed_link_targets) {
     const abs = c.action.url.startsWith('/') ? (c.base_url || '') + c.action.url : c.action.url;
     need(c.allowed_link_targets.some((t) => abs.startsWith(t)), 'action.url must sit under one of allowed_link_targets');
@@ -74,10 +86,23 @@ export function loadConfig(file, root = process.cwd()) {
   try { raw = JSON.parse(fs.readFileSync(full, 'utf8')); } catch (e) { return { problems: [`config is not valid JSON: ${e.message}`] }; }
   const problems = checkConfig(raw);
   const cfg = merge(DEFAULTS, raw);
-  cfg.pace = { ...DEFAULTS.pace, ...(raw.pace || {}) };
+  cfg.cap = { ...CAP_DEFAULTS, ...(raw.cap || {}) };
+  cfg.distinct = { ...DISTINCT_DEFAULTS, ...(raw.distinct || {}) };
   cfg.root = root;
   cfg.ledger_dir = raw.ledger_dir || DEFAULTS.ledger_dir;
   return { cfg, problems };
+}
+
+// Sites whose already-published pages the engine never modifies, redirects,
+// merges, unpublishes or undoes (her ruling, 3 Nov 2026: Horse and Hicks).
+// Keyed by host so no caller repo changes; a site may also set
+// published_pages_frozen: true in its own config. The list always wins.
+export const FROZEN_SITES = ['horselegalguide.com', 'hicksconsulting.org'];
+export function publishedFrozen(cfg) {
+  if (cfg?.published_pages_frozen === true) return true;
+  let host = '';
+  try { host = new URL(cfg?.base_url || '').host.replace(/^www\./, ''); } catch { /* no base_url */ }
+  return FROZEN_SITES.includes(host) || FROZEN_SITES.includes(String(cfg?.site || '').replace(/^www\./, ''));
 }
 
 export function isProtected(cfg, rel) {

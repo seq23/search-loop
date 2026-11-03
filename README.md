@@ -17,7 +17,7 @@ gh variable set SEARCH_LOOP_MODE --body slow -R seq23/search-loop
 
 | Mode | FIND | BUILD | CHECK + REPAIR | Strengthening rewrites |
 |---|---|---|---|---|
-| `normal` | weekly | site pace (10/day start, up to 30) | daily | yes |
+| `normal` | weekly | distinct pages only, under the site's cap (max 10/day) | daily | yes |
 | `slow` | weekly | max **3 pages/site/day** | weekly | no (undo and merge only) |
 | `off` | — | — | CHECK + report still run; the report says **"Search loop is switched off (mode=off)"** | no |
 
@@ -48,9 +48,17 @@ Every site shares the same free capacity, so the engine spreads the load over th
 - When every lane is out: the run drops to `slow` for the day (`NAMED NOTE [FREE_MODEL_RATE_LIMITED]`), the search stays queued for the next run (never dropped), and the report names each closed lane. If BUILD then published nothing, the run writes **`NAMED NOTE [NO_FREE_MODEL]`** (job summary and the weekly report's notes; exit 0, because the next run retries the queued searches — never a red run) and counts the streak in `runs.json` (`no_free_model`); the note names it ("run N in a row since …"). Any run whose lanes answer ends the streak. Only a site with no model credential at all and nothing else done exits red (`NAMED STOP [FREE_MODEL_KEY]`, exit 3): retrying cannot fix a missing key.
 - **Stagger:** a scheduled run waits a fixed, site-specific 0–39 minutes (hash of `site`) before starting, so sites do not hit the shared lanes together; also give each caller its own cron minute. `llm.stagger: false` turns it off; dispatched runs never wait.
 
-## Pace
+## Distinct pages and the per-site cap (v1.3.0)
 
-Starts at `pace.start_per_day` (10). Once a week: if more than half of the pages 14–42 days old are indexed (Search Console URL Inspection, free), +5/day up to the cap (30); otherwise halved. If indexing cannot be read, the pace holds. Every change is logged with its reason in `pace.json`.
+Her ruling, 3 Nov 2026: the search loop publishes only distinct pages, under a per-site cap that grows with results. Five sites lost most of their Google exposure under thousands of near-identical template pages and recovered only after cutting to a few dozen to a few hundred distinct pages. This replaces the old fixed pace (10/day, +5/week, cap 30).
+
+**Distinct intent gate** (`src/distinct.mjs`). Before a search is drafted, and again on the draft's H1 and answer, it is compared with every page the site already has: page titles and H1s, the engine's own live question pages, and every URL in the site's `sitemap*.xml` files at the repo root (`distinct.sitemap_files` to name others). Same intent means: the same intent words after normalising (stop words, intent verbs like "how to / avoid / tips", plurals removed); a Jaccard overlap of those words of at least `distinct.jaccard` (0.6); every intent word of the shorter one (3+ words, `distinct.containment_min_words`) inside the longer (the template shape: "wedding budget spreadsheet" + "for a small wedding"); or, after drafting, a direct answer sharing at least `distinct.same_answer` (0.5) of its 3-word shingles with an engine page's. A match publishes nothing: the search becomes a **strengthen brief** for the existing URL (added to `targets.json` `strengthen`, and to an engine page's own strengthen queries) and is logged in `pages.json` `redirected` and the week report's `redirected` (query + URL + why).
+
+**Outcome-gated cap** (`src/cap.mjs`, ledger `cap.json`). New pages publish only while the site's live engine pages are under `cap.max_live_pages`. Starting value: the site's setting, or by default the site's distinct live engine pages (near-twins count once), at least `cap.start_pages` (20). Once a week, before BUILD, the engine reads Google impressions from Search Console by date: the last 28 days (ending 3 days ago) against the 28 before. Beat them → the cap rises by `cap.grow_share` (10%); fell → it drops back by the same share (never under `cap.min_pages`, 10); flat → held. **No Search Console numbers → the cap holds** (no growth), with `NAMED NOTE [CAP_HELD_NO_DATA]` naming why. Every change is logged with its reason in `cap.json`. `cap.max_per_day` (10; 3 in `slow`) is a run guard for the shared free lanes, not a pace: it never grows. Searches the cap holds back stay queued and are counted in the report's `held_by_cap`.
+
+**Frozen published pages** (her ruling, 3 Nov 2026: Horse and Hicks). On `horselegalguide.com` and `hicksconsulting.org` (the `FROZEN_SITES` list in `src/config.mjs`, keyed by host so no caller changes), or any site with `published_pages_frozen: true`, the engine never modifies, redirects, merges, unpublishes or undoes an already-published page: no related links are inserted into existing pages, the 2/4/8-week checks record numbers but never strengthen, undo or merge, and a same-intent search is skipped (logged in `pages.json` `dropped`), never turned into a strengthen brief. New pages still publish under the site's approval rules.
+
+The week report says: `published`, `held_by_cap`, `redirected` (with the existing URLs), and `cap` (`max_live_pages`, `live`, `room`, `why`).
 
 ## How a site adopts it
 
@@ -66,7 +74,9 @@ Starts at `pace.start_per_day` (10). Once a week: if more than half of the pages
 | `output.dir`, `output.format`, `output.url_prefix` | yes | where pages go: `dir-index` (`x/index.html`) or `html-file` (`x.html`) |
 | `output.redirects` | no | where merges write their 301: `{file:"_redirects", format:"lines"}` (default) or a JSON list (`format:"json-list"`, `list_key`, `source_field`, `source_form: rel\|route`, `target_field`, `extra`, `count_key`) |
 | `mode` | no | `normal` (default), `slow`, `off` — can only lower the global switch |
-| `pace` | no | `start_per_day` 10, `step_per_week` 5, `cap` ≤ 30, `min_per_day` 2 |
+| `cap` | no | `max_live_pages` (null = start from the site's distinct live engine pages, at least `start_pages` 20), `grow_share` 0.1, `min_pages` 10, `max_per_day` 10 (≤ 30). The old `pace` key is retired and ignored |
+| `distinct` | no | same-intent thresholds: `jaccard` 0.6, `containment_min_words` 3, `same_answer` 0.5; `sitemap_files` (default every `sitemap*.xml` at the root) |
+| `published_pages_frozen` | no | `true` = never modify, redirect, merge, unpublish or undo a published page (always on for Horse and Hicks) |
 | `menu_pages_need_approval` | no | `true` = never edit menu pages (`menu_pages[]` or the homepage `<nav>` links) |
 | `menu_pages` | no | explicit list of menu routes |
 | `health_gate` | no | `none` (default), `health`, `dental`; with `health.real_facts` `{services[], hours}` |
@@ -118,7 +128,7 @@ Optional inputs: `setup_command` (e.g. `npm ci --ignore-scripts`), `post_build_c
 
 3. **Secrets** — all optional; a missing one is a `NAMED NOTE [SECRET_MISSING_…]` line (job summary; the run stays green) and the stages that need it write `not read`. No paid key is ever used: the model route is $0-only (`max_cost_usd: 0`, `fallback_to_paid: false`, a non-zero `usage.cost` fails loud).
 
-4. **Ledger** (committed to the site under `ledger_dir`): `targets.json`, `discovery-receipt.json` (every host called, cost 0), `pages.json` (every page, checks, strengthen hashes), `drafts/`, `snapshots/` (pre-strengthen bytes for undo), `pace.json`, `consolidation-ledger.json`, `winners.json`, `ai-daily.json`, `runs.json`, `search-loop-week.json`.
+4. **Ledger** (committed to the site under `ledger_dir`): `targets.json`, `discovery-receipt.json` (every host called, cost 0), `pages.json` (every page, checks, strengthen hashes), `drafts/`, `snapshots/` (pre-strengthen bytes for undo), `cap.json` (the per-site cap, its history and held counts), `consolidation-ledger.json`, `winners.json`, `ai-daily.json`, `runs.json`, `search-loop-week.json`.
 
 ## Exit codes and Rule 0
 
@@ -131,4 +141,4 @@ npm run check        # validator + its self-test, unit tests, engine --self-test
 node bin/search-loop.mjs run --config search-loop.config.json --stage find   # in a site checkout
 ```
 
-Releases: semver tags `v1.x.y` plus the moving `v1` tag that callers pin.
+Releases: semver tags `v1.x.y` plus the moving `v1` tag that callers pin. v1.3.0: distinct intent gate, outcome-gated per-site cap (replaces the fixed pace), frozen published pages for Horse and Hicks.

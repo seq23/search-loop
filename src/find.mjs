@@ -16,7 +16,7 @@ export const keyOf = (q) => contentWords(q).sort().join(' ');
 // Same search intent, different verb: "overcome / avoid / stop decision
 // fatigue" is ONE page. Variants ride along as secondary queries.
 export const INTENT_VERBS = new Set('overcome avoid stop beat fix reduce prevent handle manage deal get rid cope combat fight end break tips ways guide steps strategies ideas examples explained meaning definition simple easy good better really actually start improve'.split(' '));
-const stem = (w) => w.replace(/(ing|ers|er|ed|es|s)$/, '');
+export const stem = (w) => w.replace(/(ing|ers|er|ed|es|s)$/, '');
 export function intentKey(q) {
   const w = contentWords(q).filter((x) => !INTENT_VERBS.has(x)).map(stem);
   return (w.length ? w : contentWords(q).map(stem)).sort().join(' ');

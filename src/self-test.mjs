@@ -6,14 +6,16 @@ import { fixtureConfig, fixtureDraft, FIXTURE_CONFIG_RAW } from './fixture.mjs';
 import { checkConfig } from './config.mjs';
 import { lowest, MODE_RULES, OFF_SENTENCE, parseModeFile } from './mode.mjs';
 import { checkReport, REPORT_FIELDS } from './report.mjs';
-import { nextPace } from './pace.mjs';
+import { nextCap } from './cap.mjs';
+import { sameIntent, intentWords } from './distinct.mjs';
+import { publishedFrozen } from './config.mjs';
 import { decide } from './check.mjs';
 import { aiEngineFor } from './analytics.mjs';
 import { NamedStop, EXIT } from './util.mjs';
 
 const TODAY = '2026-11-01';
 const page = (cfg, d) => ({ query: 'how to plan your week as a founder', html: render(cfg, { slug: 'how-to-plan-your-week', draft: d, related: [{ route: '/weekly-review/', anchor: 'How to run a weekly review' }], published: TODAY }), facts: d.facts });
-const goodReport = () => ({ schema: 'search-loop-week-v1', week: '2026-W44', site: 'example.com', generated_at: new Date().toISOString(), state: 'running', published: 3, indexed: 'not read: x', pace: 10, ai_visitors: 0, ai_bot_hits: 'not read: y', conversions: 'not read: z', wins: 0, undone: 0, merged: 0, notes: [], run_url: null });
+const goodReport = () => ({ schema: 'search-loop-week-v1', week: '2026-W44', site: 'example.com', generated_at: new Date().toISOString(), state: 'running', published: 3, indexed: 'not read: x', pace: 10, ai_visitors: 0, ai_bot_hits: 'not read: y', conversions: 'not read: z', wins: 0, undone: 0, merged: 0, held_by_cap: 0, redirected: [], cap: { max_live_pages: 20, live: 3, room: 17, why: 'started at 20' }, notes: [], run_url: null });
 
 export function cases() {
   const cfg = fixtureConfig();
@@ -47,7 +49,10 @@ export function cases() {
     ['health: invented hours', g((d) => { d.sections[1].paragraphs[1] += ' We are open until 9pm with walk-ins welcome.'; }, health)],
     ['config: no action', () => checkConfig({ ...FIXTURE_CONFIG_RAW, action: undefined })],
     ['config: output inside protected path', () => checkConfig({ ...FIXTURE_CONFIG_RAW, protected_paths: ['questions'] })],
-    ['config: pace over 30', () => checkConfig({ ...FIXTURE_CONFIG_RAW, pace: { cap: 40, start_per_day: 10 } })],
+    ['config: per-day run guard over 30', () => checkConfig({ ...FIXTURE_CONFIG_RAW, cap: { max_per_day: 40 } })],
+    ['config: cap growth share over 0.5', () => checkConfig({ ...FIXTURE_CONFIG_RAW, cap: { grow_share: 2 } })],
+    ['report: redirect without the existing URL', () => checkReport({ ...goodReport(), redirected: [{ query: 'x', strengthen: null }] })],
+    ['report: cap without why', () => checkReport({ ...goodReport(), cap: { max_live_pages: 20, why: '' } })],
     ['config: action on another host', () => checkConfig({ ...FIXTURE_CONFIG_RAW, action: { label: 'x', url: 'https://other.example.org/buy' } })],
     ['report: missing field', () => { const r = goodReport(); delete r.ai_bot_hits; return checkReport(r); }],
     ['report: invented zero instead of not read', () => checkReport({ ...goodReport(), conversions: '0' })],
@@ -106,9 +111,14 @@ export async function selfTest() {
     ['mode table: off still builds', () => (MODE_RULES.off.build || MODE_RULES.off.find !== 'never' ? [] : ['caught'])],
     ['mode table: slow cap is not 3 / still strengthens', () => (MODE_RULES.slow.build_cap === 3 && !MODE_RULES.slow.strengthen && MODE_RULES.slow.check === 'weekly' ? ['caught'] : [])],
     ['mode: unknown value accepted', () => (parseModeFile('{"mode":"turbo"}').mode === null ? ['caught'] : [])],
-    ['pace: low indexing does not halve', () => (nextPace(cfg, { per_day: 20, history: [] }, { measured: 10, indexed: 2, source: 't' }).pace.per_day === 10 ? ['caught'] : [])],
-    ['pace: grows past cap 30', () => (nextPace(cfg, { per_day: 30, history: [] }, { measured: 10, indexed: 9, source: 't' }).pace.per_day === 30 ? ['caught'] : [])],
-    ['pace: change not logged', () => (nextPace(cfg, { per_day: 10, history: [] }, { measured: 10, indexed: 9, source: 't' }).pace.history.length === 1 ? ['caught'] : [])],
+    ['cap: grows with no Search Console data', () => (nextCap(cfg, { max_live_pages: 50, history: [] }, { notRead: 'x' }).cap.max_live_pages === 50 ? ['caught'] : [])],
+    ['cap: grows when impressions fell or stayed flat', () => (nextCap(cfg, { max_live_pages: 50, history: [] }, { last: 90, prev: 100 }).cap.max_live_pages < 50 && nextCap(cfg, { max_live_pages: 50, history: [] }, { last: 100, prev: 100 }).cap.max_live_pages === 50 ? ['caught'] : [])],
+    ['cap: does not grow on growth', () => (nextCap(cfg, { max_live_pages: 50, history: [] }, { last: 120, prev: 100 }).cap.max_live_pages === 55 ? ['caught'] : [])],
+    ['cap: change not logged', () => (nextCap(cfg, { max_live_pages: 50, history: [] }, { last: 120, prev: 100 }).cap.history.length === 1 ? ['caught'] : [])],
+    ['distinct: same wording passes as new', () => (sameIntent(intentWords('how to plan your week'), intentWords('weekly plan: how do I plan my week')) && sameIntent(intentWords('plan my week'), intentWords('how to plan your week')) ? ['caught'] : [])],
+    ['distinct: template variant passes as new', () => (sameIntent(intentWords('wedding budget spreadsheet for a small wedding'), intentWords('wedding budget spreadsheet')) ? ['caught'] : [])],
+    ['distinct: different intents merged', () => (sameIntent(intentWords('how to plan your week'), intentWords('how to pay wedding vendors')) ? [] : ['caught'])],
+    ['frozen: Horse or Hicks published pages not frozen', () => (publishedFrozen({ base_url: 'https://www.horselegalguide.com' }) && publishedFrozen({ base_url: 'https://hicksconsulting.org' }) && !publishedFrozen({ base_url: 'https://example.com' }) ? ['caught'] : [])],
     ['decide: worse page not undone', () => (decide({ strengthen: { at: '2026-10-01', baseline_position: 12 } }, { position: 18, checkpoint: 'w8' }, { rules: MODE_RULES.normal, today: TODAY }).includes('undo') ? ['caught'] : [])],
     ['decide: slow mode strengthens', () => (decide({}, { position: 14, checkpoint: 'w4' }, { rules: MODE_RULES.slow, today: TODAY }).includes('strengthen') ? [] : ['caught'])],
     ['decide: 90-day zero not merged', () => (decide({}, { impressions: 0, checkpoint: 'd90', source: 'search_console' }, { rules: MODE_RULES.normal, today: TODAY }).includes('merge') ? ['caught'] : [])],
