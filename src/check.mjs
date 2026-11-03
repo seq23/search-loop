@@ -7,13 +7,14 @@ import path from 'node:path';
 import { ledger } from './ledger.mjs';
 import { searchAnalytics, inspectUrl, dateDaysAgo } from './gsc.mjs';
 import { cloudflareDay } from './analytics.mjs';
-import { centralDate, daysBetween, sha256, fetchText, tokenOverlap, pastSoft, progress } from './util.mjs';
+import { centralDate, isoWeek, daysBetween, sha256, fetchText, tokenOverlap, pastSoft, progress } from './util.mjs';
 import { render, withoutRelatedLink } from './render.mjs';
 import { gate } from './gate.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
 import { buildIndex } from './site-index.mjs';
 import { verifyFacts } from './build.mjs';
 import { publishedFrozen } from './config.mjs';
+import { learnWeights } from './compete.mjs';
 
 export const CHECKPOINTS = [['w2', 14], ['w4', 28], ['w8', 56], ['d90', 90]];
 export const NEAR_PAGE_ONE = [10.5, 20];
@@ -147,7 +148,8 @@ export async function check(cfg, { rules: modeRules, mode, now = new Date(), fet
     for (const k of due.length ? due : ['settle']) {
       snap.checkpoint = k;
       res.checked++;
-      if (k !== 'settle') p.checks[k] = { at: today, ...snap };
+      // v1.6.0: each checkpoint records its lane and whether the page reached the top 3.
+      if (k !== 'settle') p.checks[k] = { at: today, ...snap, lane: p.lane || 'striking', ...(snap.source === 'search_console' ? { top3: typeof snap.position === 'number' && snap.position <= 3 } : {}) };
       if (snap.source !== 'search_console') continue;
       for (const act of decide(p, snap, { rules, today })) {
         if (act === 'winner' && !p.winner) { p.winner = today; res.wins++; winners.topics = [...new Set([p.query, ...(winners.topics || [])])].slice(0, 30); }
@@ -158,6 +160,12 @@ export async function check(cfg, { rules: modeRules, mode, now = new Date(), fet
       }
     }
   }
+  // Learning, weekly per site: can-be-#1 weights move with each signal's top-3 hit rate.
+  const lw = L.read('lane_weights', null);
+  const learned = learnWeights(book.pages, lw, { week: isoWeek(now) });
+  if (!lw || lw.week !== learned.week) L.write('lane_weights', { schema: 'search-loop-lane-weights-v1', week: learned.week, weights: learned.weights, log: learned.log });
+  for (const c of learned.changes) notes.push(`CHECK learning: can-be-#1 weight "${c.signal}" ${c.from} -> ${c.to} (${c.why})`);
+  res.weight_changes = learned.changes;
   L.write('winners', winners);
   L.write('consolidation', consolidation);
   L.write('pages', book);

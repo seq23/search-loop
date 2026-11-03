@@ -5,6 +5,7 @@ import { ledger } from './ledger.mjs';
 import { centralDate, daysBetween, isoWeek } from './util.mjs';
 import { OFF_SENTENCE } from './mode.mjs';
 import { currentCap, heldThisWeek, liveEnginePages } from './cap.mjs';
+import { laneStats, laneRatio, WEIGHT_DEFAULTS } from './compete.mjs';
 
 export const REPORT_SCHEMA = 'search-loop-week-v1';
 export const REPORT_FIELDS = ['site', 'generated_at', 'state', 'published', 'indexed', 'pace', 'ai_visitors', 'ai_bot_hits', 'conversions', 'wins', 'undone', 'merged', 'held_by_cap', 'redirected', 'cap', 'notes', 'run_url'];
@@ -56,9 +57,18 @@ export function buildReport(cfg, { mode, effectivePace, notes = [], stopped = fa
     redirected: (book.redirected || []).filter((x) => within7(x.at, today)).map((x) => ({ query: x.query, strengthen: x.url, matched_by: x.matched_by, at: x.at })),
     cap: { max_live_pages: capState.max_live_pages, live, room: Math.max(0, capState.max_live_pages - live), why: capState.reason },
     notes: allNotes,
+    // v1.6.0: hit rate per lane (pages measured at 2/4/8 weeks that reached the top 3),
+    // the lane split and this site's can-be-#1 weights with their change log.
+    lanes: lanesBlock(cfg, L, pages),
     run_url: process.env.GITHUB_RUN_ID ? `${process.env.GITHUB_SERVER_URL || 'https://github.com'}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : null,
   };
   return r;
+}
+
+export function lanesBlock(cfg, L, pages) {
+  const lw = L.read('lane_weights', null);
+  const rec = L.read('receipt', null);
+  return { ratio: laneRatio(cfg), ...laneStats(pages), weights: lw?.weights || { ...WEIGHT_DEFAULTS }, weight_changes: (lw?.log || []).slice(-10), competition: rec?.competition || 'not read: FIND has not run since v1.6.0' };
 }
 
 export function checkReport(r) {
@@ -72,6 +82,12 @@ export function checkReport(r) {
   if (r && typeof r.held_by_cap !== 'number') p.push('held_by_cap must be a number');
   if (r && (!Array.isArray(r.redirected) || r.redirected.some((x) => !x || typeof x.query !== 'string' || !/^https?:\/\//.test(String(x.strengthen))))) p.push('redirected must be a list of {query, strengthen: <existing URL>}');
   if (r && !(r.cap && Number.isInteger(r.cap.max_live_pages) && typeof r.cap.why === 'string' && r.cap.why.length > 0)) p.push('cap must say max_live_pages and why');
+  if (r && 'lanes' in r) {
+    for (const l of ['can_be_one', 'striking']) {
+      const x = r.lanes?.[l];
+      if (!x || !Number.isInteger(x.pages) || !Number.isInteger(x.measured) || !Number.isInteger(x.top3) || !(typeof x.hit_rate === 'number' || String(x.hit_rate).startsWith('not read: '))) p.push(`lanes.${l} must say pages, measured, top3 and hit_rate (a number or "not read: <reason>")`);
+    }
+  }
   if (r?.state === 'off' && !(r.notes || []).some((n) => n.includes(OFF_SENTENCE))) p.push(`an off report must say "${OFF_SENTENCE}"`);
   return p;
 }

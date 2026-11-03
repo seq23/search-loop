@@ -190,6 +190,96 @@
         "string",
         "null"
       ]
+    },
+    "lanes": {
+      "type": "object",
+      "description": "v1.6.0 (optional; older engines omit it): the two lanes. can_be_one = picked by a competition score; striking = already ranks 8-30. hit_rate = share of pages measured at 2/4/8 weeks that reached the top 3. weights = this site's can-be-#1 weights; weight_changes = the logged adjustments.",
+      "properties": {
+        "ratio": {
+          "type": "object"
+        },
+        "can_be_one": {
+          "type": "object",
+          "required": [
+            "pages",
+            "measured",
+            "top3",
+            "hit_rate"
+          ],
+          "properties": {
+            "pages": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "measured": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "top3": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hit_rate": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                {
+                  "type": "string",
+                  "pattern": "^not read: "
+                }
+              ]
+            }
+          }
+        },
+        "striking": {
+          "type": "object",
+          "required": [
+            "pages",
+            "measured",
+            "top3",
+            "hit_rate"
+          ],
+          "properties": {
+            "pages": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "measured": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "top3": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hit_rate": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                {
+                  "type": "string",
+                  "pattern": "^not read: "
+                }
+              ]
+            }
+          }
+        },
+        "weights": {
+          "type": "object"
+        },
+        "weight_changes": {
+          "type": "array"
+        },
+        "competition": {
+          "type": "string"
+        }
+      }
     }
   }
 }

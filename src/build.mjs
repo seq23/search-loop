@@ -14,6 +14,7 @@ import { intentKey as keyOf } from './find.mjs';
 import { currentCap, liveEnginePages, recordHeld, CAP_DEFAULTS } from './cap.mjs';
 import { corpusFor, matchIntent, matchAnswer, engineAnswers, intentWords, siteWordsOf, answerShingles } from './distinct.mjs';
 import { isProtected, publishedFrozen, approvalOf } from './config.mjs';
+import { laneQueue, laneRatio } from './compete.mjs';
 
 export const DROP_RETRY_DAYS = 28;
 export const MAX_ATTEMPTS = 3; // one draft + two fix passes, then drop
@@ -188,7 +189,13 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
   let failsInRow = 0;
   let heldStop = false;
   let considered = 0;
-  for (const target of queue) {
+  // Lanes (v1.6.0): the next search comes from the lane behind its share of the
+  // pages made so far (all engine pages + this run), so the 2:1 split holds even
+  // when some searches are skipped or dropped.
+  const laneMade = { can_be_one: 0, striking: 0 };
+  for (const p of book.pages) if (p.lane && p.status !== 'declined') laneMade[p.lane] = (laneMade[p.lane] || 0) + 1;
+  const lanes = laneQueue(queue, laneRatio(cfg), laneMade);
+  for (let target = lanes.next(); target; target = lanes.next()) {
     if (made() >= room) { heldStop = true; break; }
     if (made() >= result.quota || result.attempted >= result.quota * 2 + 2 || considered >= result.quota * 6 + 10) break;
     considered++;
@@ -266,12 +273,12 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     }
     result.related_links += linkedFrom.length;
     if (appr) {
-      book.pages.push({ slug, query: target.query, score: target.score, signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: null, queued_at: today, status: 'pending_approval', pending_rel: path.posix.join(appr.pending_dir, rel), hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: [], checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
-      result.queued++;
+      book.pages.push({ slug, query: target.query, lane: target.lane || 'striking', score: target.score, scores: target.scores, reasons: target.reasons || [], signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: null, queued_at: today, status: 'pending_approval', pending_rel: path.posix.join(appr.pending_dir, rel), hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: [], checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
+      result.queued++; laneMade[target.lane || 'striking']++;
       continue;
     }
-    book.pages.push({ slug, query: target.query, score: target.score, signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: today, status: 'live', hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: linkedFrom, checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
-    result.published++;
+    book.pages.push({ slug, query: target.query, lane: target.lane || 'striking', score: target.score, scores: target.scores, reasons: target.reasons || [], signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: today, status: 'live', hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: linkedFrom, checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
+    result.published++; laneMade[target.lane || 'striking']++;
     if (gateNotes.length) result.noted = (result.noted || 0) + 1;
   }
   if (!heldStop && room < dayLeft && made() >= room && queue.length > considered) heldStop = true;
