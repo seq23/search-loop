@@ -14,6 +14,7 @@ export const DEFAULTS = {
   distinct: DISTINCT_DEFAULTS,
   menu_pages_need_approval: false,
   published_pages_frozen: false,
+  approval: { new_pages: false, pending_dir: null, approvals_file: null },
   health_gate: 'none',
   protected_paths: [],
   shares_audience_with: [],
@@ -53,6 +54,9 @@ export function checkConfig(c) {
   need(typeof (c.menu_pages_need_approval ?? false) === 'boolean', 'menu_pages_need_approval must be true or false');
   need(Array.isArray(c.protected_paths ?? []), 'protected_paths must be a list');
   need(typeof (c.published_pages_frozen ?? false) === 'boolean', 'published_pages_frozen must be true or false');
+  const ap = c.approval || {};
+  need(typeof (ap.new_pages ?? false) === 'boolean', 'approval.new_pages must be true or false');
+  for (const k of ['pending_dir', 'approvals_file']) need(ap[k] == null || (typeof ap[k] === 'string' && ap[k] && !ap[k].startsWith('/') && !ap[k].includes('..')), `approval.${k}: a relative path inside the repo`);
   const o = c.output || {};
   need(typeof o.dir === 'string' && o.dir && !o.dir.startsWith('/') && !o.dir.includes('..'), 'output.dir: a relative directory for new pages');
   need(PAGE_FORMATS.includes(o.format), `output.format must be ${PAGE_FORMATS.join(' | ')}`);
@@ -91,6 +95,16 @@ export function loadConfig(file, root = process.cwd()) {
   cfg.root = root;
   cfg.ledger_dir = raw.ledger_dir || DEFAULTS.ledger_dir;
   return { cfg, problems };
+}
+
+// Approval mode (owner ruling, 3 Nov 2026, Horse: "horse owners want to approve
+// everything that goes live"). With approval.new_pages true, BUILD writes each
+// new page into pending_dir (the owners' queue) and never into the site; a page
+// goes live only once its slug is listed under "approved" in approvals_file.
+export function approvalOf(cfg) {
+  if (cfg?.approval?.new_pages !== true) return null;
+  const led = String(cfg.ledger_dir || DEFAULTS.ledger_dir).replace(/\/+$/, '');
+  return { pending_dir: cfg.approval.pending_dir || `${led}/pending`, approvals_file: cfg.approval.approvals_file || `${led}/approvals.json` };
 }
 
 // Sites whose already-published pages the engine never modifies, redirects,
