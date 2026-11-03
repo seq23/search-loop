@@ -36,9 +36,19 @@ async function cf(pathOrQuery, { token, fetchImpl, body }) {
   return { status: r.status, j: r.json };
 }
 
-// Last 24 hours from Cloudflare zone analytics (GraphQL). Returns
-// { ai_visitors:{total, by_engine, by_path}, ai_bot_hits:{total, by_bot} } or { notRead }.
-export async function cloudflareDay({ zoneName, token = process.env.CLOUDFLARE_API_TOKEN, fetchImpl = fetch, now = new Date() }) {
+// Last 24 hours from Cloudflare analytics (GraphQL), read separately so one unreadable half never
+// hides the other (v1.5.1):
+//   - AI-bot reads: zone httpRequestsAdaptiveGroups by userAgent (every plan, free included);
+//   - AI-referral visits: the zone's clientRefererHost where the plan has it; on a free zone (no
+//     referer field) Cloudflare Web Analytics (account rumPageloadEventsAdaptiveGroups, refererHost),
+//     counted only when its beacon is really on the site: in the live home page's HTML, or at least
+//     RUM_MIN_WEEK page loads in 7 days. Otherwise "not read" with the reason, never a false 0.
+//     (Zone page views are no yardstick: on these sites they are mostly bots.)
+// Returns { ai_visitors | visitorsNotRead, ai_bot_hits | botsNotRead, window } or { notRead } when nothing is readable.
+export const RUM_MIN_WEEK = 7;
+const NO_FIELD = /does not have access to the field/i;
+export async function cloudflareDay({ zoneName, token = process.env.CLOUDFLARE_API_TOKEN, accountId = process.env.CLOUDFLARE_ACCOUNT_ID, fetchImpl = fetch, now = new Date() }) {
+  token = String(token || '').trim();
   if (!token) return { notRead: 'CLOUDFLARE_API_TOKEN is not set' };
   try {
     const z = await cf(`/zones?name=${encodeURIComponent(zoneName)}`, { token, fetchImpl });
@@ -46,28 +56,53 @@ export async function cloudflareDay({ zoneName, token = process.env.CLOUDFLARE_A
     if (!zone) return { notRead: `the Cloudflare token cannot see zone ${zoneName} (HTTP ${z.status}); it needs Zone:Read + Analytics:Read` };
     const since = new Date(now - 86400000).toISOString();
     const until = now.toISOString();
-    const hosts = Object.keys(AI_REFERRERS.engines).filter((h) => !AI_REFERRERS.not_counted_as_ai.includes(AI_REFERRERS.engines[h]));
-    const query = `query($zone:String!,$since:Time!,$until:Time!,$hosts:[String!],$bots:[ZoneHttpRequestsAdaptiveGroupsFilter_InputObject!]){viewer{zones(filter:{zoneTag:$zone}){
-      refs:httpRequestsAdaptiveGroups(limit:2000,filter:{datetime_geq:$since,datetime_lt:$until,clientRefererHost_in:$hosts}){count dimensions{clientRefererHost clientRequestPath}}
-      bots:httpRequestsAdaptiveGroups(limit:2000,filter:{datetime_geq:$since,datetime_lt:$until,OR:$bots}){count dimensions{userAgent}}}}}`;
+    const gql = async (query, variables) => {
+      const g = await cf(null, { token, fetchImpl, body: { query, variables } });
+      if (g.j?.errors?.length) return { error: String(g.j.errors[0].message).replace(/token\.[0-9a-f]+/g, 'token').slice(0, 160) };
+      return { data: g.j?.data, status: g.status };
+    };
+    const out = { window: { since, until } };
+    // AI-bot reads.
     const bots = AI_BOTS.bots.map((b) => ({ userAgent_like: `%${b.token}%` }));
-    const g = await cf(null, { token, fetchImpl, body: { query, variables: { zone, since, until, hosts, bots } } });
-    if (g.j?.errors?.length) return { notRead: `Cloudflare analytics refused the query: ${String(g.j.errors[0].message).slice(0, 120)}` };
-    const zz = g.j?.data?.viewer?.zones?.[0];
-    if (!zz) return { notRead: `Cloudflare analytics returned no zone data (HTTP ${g.status})` };
-    const vis = { total: 0, by_engine: {}, by_path: {} };
-    for (const r of zz.refs || []) {
-      const e = aiEngineFor('https://' + r.dimensions.clientRefererHost);
-      if (!e) continue;
-      vis.total += r.count; vis.by_engine[e] = (vis.by_engine[e] || 0) + r.count;
-      vis.by_path[r.dimensions.clientRequestPath] = (vis.by_path[r.dimensions.clientRequestPath] || 0) + r.count;
+    const b = await gql(`query($zone:String!,$since:Time!,$until:Time!,$bots:[ZoneHttpRequestsAdaptiveGroupsFilter_InputObject!]){viewer{zones(filter:{zoneTag:$zone}){bots:httpRequestsAdaptiveGroups(limit:2000,filter:{datetime_geq:$since,datetime_lt:$until,OR:$bots}){count dimensions{userAgent}}}}}`, { zone, since, until, bots });
+    const bz = b.data?.viewer?.zones?.[0];
+    if (b.error) out.botsNotRead = `Cloudflare analytics refused the bot query: ${b.error}`;
+    else if (!bz) out.botsNotRead = `Cloudflare analytics returned no zone data (HTTP ${b.status})`;
+    else {
+      const hits = { total: 0, by_bot: {} };
+      for (const r of bz.bots || []) { const n = botFor(r.dimensions.userAgent); if (!n) continue; hits.total += r.count; hits.by_bot[n] = (hits.by_bot[n] || 0) + r.count; }
+      out.ai_bot_hits = hits;
     }
-    const hits = { total: 0, by_bot: {} };
-    for (const r of zz.bots || []) {
-      const b = botFor(r.dimensions.userAgent);
-      if (!b) continue;
-      hits.total += r.count; hits.by_bot[b] = (hits.by_bot[b] || 0) + r.count;
+    // AI-referral visits.
+    const hosts = Object.keys(AI_REFERRERS.engines).filter((h) => !AI_REFERRERS.not_counted_as_ai.includes(AI_REFERRERS.engines[h]));
+    const tally = (rows, hostKey, pathKey) => {
+      const vis = { total: 0, by_engine: {}, by_path: {} };
+      for (const r of rows || []) {
+        const e = aiEngineFor('https://' + r.dimensions[hostKey]);
+        if (!e) continue;
+        vis.total += r.count; vis.by_engine[e] = (vis.by_engine[e] || 0) + r.count;
+        vis.by_path[r.dimensions[pathKey]] = (vis.by_path[r.dimensions[pathKey]] || 0) + r.count;
+      }
+      return vis;
+    };
+    const ref = await gql(`query($zone:String!,$since:Time!,$until:Time!,$hosts:[String!]){viewer{zones(filter:{zoneTag:$zone}){refs:httpRequestsAdaptiveGroups(limit:2000,filter:{datetime_geq:$since,datetime_lt:$until,clientRefererHost_in:$hosts}){count dimensions{clientRefererHost clientRequestPath}}}}}`, { zone, since, until, hosts });
+    if (!ref.error && ref.data?.viewer?.zones?.[0]) out.ai_visitors = tally(ref.data.viewer.zones[0].refs, 'clientRefererHost', 'clientRequestPath');
+    else if (ref.error && !NO_FIELD.test(ref.error)) out.visitorsNotRead = `Cloudflare analytics refused the referral query: ${ref.error}`;
+    else if (!accountId) out.visitorsNotRead = 'this zone\'s plan has no referrer field and CLOUDFLARE_ACCOUNT_ID is not set for Web Analytics';
+    else {
+      // Free zone: Web Analytics, if its beacon actually covers the site.
+      const bare = zoneName.replace(/^www\./, '');
+      const week = new Date(now - 7 * 86400000);
+      const rum = await gql(`query($a:String!,$since:Time!,$until:Time!,$wk:Time!,$hosts:[String!]){viewer{accounts(filter:{accountTag:$a}){day:rumPageloadEventsAdaptiveGroups(limit:2000,filter:{datetime_geq:$since,datetime_lt:$until,requestHost_in:$hosts}){count dimensions{refererHost requestPath}} week:rumPageloadEventsAdaptiveGroups(limit:1,filter:{datetime_geq:$wk,datetime_lt:$until,requestHost_in:$hosts}){count}}}}`, { a: accountId, since, until, wk: week.toISOString(), hosts: [bare, `www.${bare}`] });
+      const acct = rum.data?.viewer?.accounts?.[0];
+      const beacon = (acct?.week || []).reduce((n, g) => n + g.count, 0);
+      let onHome = false;
+      try { const home = await fetchImpl(`https://${zoneName}/`, { headers: { 'user-agent': 'Mozilla/5.0 (compatible; search-loop analytics check)' } }); onHome = /cloudflareinsights\.com\/beacon/i.test(await home.text()); } catch { onHome = false; }
+      if (rum.error) out.visitorsNotRead = `this zone's plan has no referrer field, and Web Analytics refused the query: ${rum.error}`;
+      else if (!onHome && beacon < RUM_MIN_WEEK) out.visitorsNotRead = `this zone's plan has no referrer field, and the Cloudflare Web Analytics beacon is not on the site (not in the home page, ${beacon} page load(s) in 7 days): turn on Web Analytics for ${bare}`;
+      else out.ai_visitors = { ...tally(acct.day, 'refererHost', 'requestPath'), source: 'web-analytics' };
     }
-    return { ai_visitors: vis, ai_bot_hits: hits, window: { since, until } };
+    if (out.ai_visitors === undefined && out.ai_bot_hits === undefined) return { notRead: `${out.visitorsNotRead}; ${out.botsNotRead}` };
+    return out;
   } catch (e) { return { notRead: `Cloudflare analytics failed: ${String(e.message).slice(0, 120)}` }; }
 }

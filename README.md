@@ -103,7 +103,7 @@ The week report says: `published`, `held_by_cap`, `redirected` (with the existin
 | `gsc` | no | `site_url` or `site_url_env` (default env `GSC_SITE_URL`) |
 | `llm.routing_file` | no | the site's own $0 routing file (OpenRouter `:free` models); default [`config/free-models.json`](config/free-models.json) |
 | `indexnow` | no | `{key, key_location}` — the key the site already serves |
-| `analytics` | no | `ai_referrals` / `ai_bot_hits`: `cloudflare` (+ `zone`) or `none` |
+| `analytics` | no | `ai_referrals` / `ai_bot_hits`: `cloudflare` (+ `zone`) or `none`. v1.5.1: bot reads by user agent work on every plan; on a free zone (no referrer field) visits come from Cloudflare Web Analytics when its beacon is on the site, else "not read" with the reason. The token needs Account + Zone Analytics:Read |
 | `conversions.source` | no | `none` → the report says `not read` |
 | `ledger_dir` | no | default `data/search-loop` |
 
