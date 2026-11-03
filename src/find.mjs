@@ -1,15 +1,16 @@
 // FIND (weekly, $0): measured and free signals only. Never paid or grounded
-// model calls, never SERP scraping. A signal we could not read is written as
+// model calls, never SERP scraping. Since v1.6.0 every target is in one of two
+// lanes (compete.mjs): can_be_one (competition score) or striking (scoreCandidate). A signal we could not read is written as
 // "not read: <reason>", never invented.
 import { searchAnalytics, dateDaysAgo } from './gsc.mjs';
 import { norm, contentWords, tokenOverlap, fetchText, sleep, isoWeek, pastSoft, progress } from './util.mjs';
 import { ledger } from './ledger.mjs';
 import { buildIndex } from './site-index.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
+import { easyWins, placeVariants, gscCompetition, canBeOneScore, readTop10, weightsOf, laneRatio, assignLanes, COMPETE_DEFAULTS } from './compete.mjs';
 
 export const QUESTION_PREFIXES = ['how to', 'what is', 'why', 'can', 'is', 'best way to'];
 const NAV = /\b(login|log in|sign in|reddit|youtube|pdf download|coupon|promo code|torrent|apk|near me now|jobs|salary|careers)\b/;
-const COMPETITION_NOT_READ = 'not read: no free, ToS-safe competition signal (SERP scraping is not used)';
 
 export const keyOf = (q) => contentWords(q).sort().join(' ');
 
@@ -132,7 +133,7 @@ export function claimedElsewhere(q, cfg, claims) {
 
 export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, chat = freeChat } = {}) {
   const L = ledger(cfg);
-  const receipt = { schema: 'search-loop-discovery-v1', site: cfg.site, week: isoWeek(now), generated_at: now.toISOString(), paid_calls: 0, cost_usd: 0, hosts: {}, sources: {}, competition: COMPETITION_NOT_READ };
+  const receipt = { schema: 'search-loop-discovery-v1', site: cfg.site, week: isoWeek(now), generated_at: now.toISOString(), paid_calls: 0, cost_usd: 0, hosts: {}, sources: {} };
   const cands = new Map();
   const add = (q, sig) => {
     const n = norm(q);
@@ -177,11 +178,18 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
     } catch { receipt.sources.bing_webmaster = `not read: http ${r.status || r.error}`; }
   } else receipt.sources.bing_webmaster = 'not read: BING_WEBMASTER_API_KEY is not set';
 
-  // 3. Autocomplete (Google + Bing), seeded from measured queries + topic seeds + winners.
+  // 2b. Easy wins (top 3 with few impressions, or an engine page top 3 at 2 weeks):
+  //     their close variants are the first can-be-#1 candidates.
+  const wins = easyWins(measured, L.pages().pages || []);
+  receipt.sources.easy_wins = sa.ok ? `ok: ${wins.length} easy win(s) in Search Console` : `not read: ${sa.reason}`;
+  const places0 = cfg.local ? [cfg.local.city, ...(cfg.local.neighbourhoods || [])] : [];
+  for (const v of placeVariants(wins, places0)) if (relevant(v.query, cfg)) add(v.query, { local: true, place_variant_of: v.of });
+
+  // 3. Autocomplete (Google + Bing), seeded from easy wins + measured queries + topic seeds + winners.
   const winners = L.read('winners', { topics: [] }).topics || [];
   const topMeasured = [...measured].sort((a, b) => b.impressions - a.impressions).map((m) => m.query).filter((q, i, a) => a.indexOf(q) === i).slice(0, 12);
   const places = cfg.local ? [cfg.local.city, ...(cfg.local.neighbourhoods || [])] : [];
-  const seeds = [...new Set([...winners, ...topMeasured, ...cfg.topics, ...cfg.topics.flatMap((t) => places.map((p) => `${t} ${p}`))].map(norm))].filter(Boolean);
+  const seeds = [...new Set([...wins.map((w) => w.query), ...winners, ...topMeasured, ...cfg.topics, ...cfg.topics.flatMap((t) => places.map((p) => `${t} ${p}`))].map(norm))].filter(Boolean);
   const expansions = [];
   for (const s of seeds) { expansions.push(s); if (!isQuestion(s)) for (const p of QUESTION_PREFIXES) expansions.push(`${p} ${s}`); }
   const budget = { left: cfg.find.max_autocomplete_calls };
@@ -204,6 +212,7 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
   const engine = L.pages().pages || [];
   const { claims, notes } = await readSharedClaims(cfg, fetchImpl);
   if (notes.length) receipt.shared_audience = notes;
+  const weights = weightsOf(L);
   const targets = [];
   const strengthen = [];
   let droppedShared = 0;
@@ -211,13 +220,18 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
     if (engine.some((p) => intentKey(p.query) === intentKey(c.query))) continue;
     const covering = index.find((p) => coverage(p, c.query, siteWords) >= 0.85);
     if (claimedElsewhere(c.query, cfg, claims)) { droppedShared++; continue; }
-    c.score = scoreCandidate(c.signals);
-    c.signals.competition = COMPETITION_NOT_READ;
+    c.scores = { striking: scoreCandidate(c.signals) };
+    const covered = Math.max(0, ...index.map((p) => coverage(p, c.query, siteWords)));
+    Object.assign(c.signals, gscCompetition(c, { wins, measured, covered }));
+    c.scores.can_be_one = canBeOneScore(c.signals, weights).score;
+    c.score = c.scores.striking;
     if (covering) strengthen.push({ ...c, page: covering.route });
     else targets.push({ ...c, kind: 'new' });
   }
+  // the screen sees the best of both lanes
+  const byOne = [...targets].sort((a, b) => b.scores.can_be_one - a.scores.can_be_one);
   targets.sort((a, b) => b.score - a.score);
-  const pool = targets.slice(0, 150);
+  const pool = [...new Set([...byOne.slice(0, 75).filter((t) => t.scores.can_be_one > 0), ...targets])].slice(0, 150);
   const screen = pool.length ? await relevanceScreen(cfg, pool, { chat, fetchImpl }) : { keep: new Set() };
   let screened = targets;
   if (screen.notRead) receipt.sources.relevance_screen = `not read: ${screen.notRead} (lexical floor only)`;
@@ -225,7 +239,24 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
     screened = pool.filter((t) => screen.keep.has(t) || t.signals.gsc_position);
     receipt.sources.relevance_screen = `ok: kept ${screened.length} of ${pool.length} (free model)`;
   }
+  // 5. Optional top-10 read for the best can-be-#1 candidates (off without a key),
+  //    then the lanes: about 2 of 3 can_be_one, 1 of 3 striking (config competition.lanes).
+  const minOne = cfg.competition?.min_can_be_one ?? COMPETE_DEFAULTS.min_can_be_one;
+  const forTop10 = [...screened].sort((a, b) => b.scores.can_be_one - a.scores.can_be_one || b.score - a.score);
+  receipt.competition = await readTop10(cfg, forTop10, { L, now, fetchImpl, receipt });
+  for (const t of screened) t.scores.can_be_one = canBeOneScore(t.signals, weights).score;
+  screened = assignLanes(screened, laneRatio(cfg), minOne);
+  for (const t of screened) {
+    const one = canBeOneScore(t.signals, weights);
+    if (t.lane === 'can_be_one') { t.lane = 'can_be_one'; t.score = one.score; t.reasons = one.reasons; }
+    else {
+      t.score = t.scores.striking;
+      t.reasons = [t.signals.gsc_position ? `already ranks ${t.signals.gsc_position} in Search Console (${t.signals.gsc_impressions} impressions)` : 'autocomplete demand (google/bing)', ...(one.score >= minOne ? [`can-be-#1 score ${one.score} too (taken by the striking lane's turn)`] : one.reasons.length ? [`can-be-#1 evidence too thin (${one.score} < ${minOne})`] : [])];
+    }
+    if (!t.signals.top10) t.signals.top10 = receipt.sources.top10?.startsWith('not read') ? receipt.sources.top10 : 'not read: outside this run\'s top-10 budget';
+  }
   strengthen.sort((a, b) => b.score - a.score);
+  receipt.lanes = { ratio: laneRatio(cfg), can_be_one: screened.filter((t) => t.lane === 'can_be_one').length, striking: screened.filter((t) => t.lane === 'striking').length, weights };
   receipt.counts = { candidates: cands.size, targets: screened.length, strengthen_candidates: strengthen.length, dropped_shared_audience: droppedShared };
   const out = { schema: 'search-loop-targets-v1', site: cfg.site, week: receipt.week, generated_at: receipt.generated_at, sources: receipt.sources, targets: screened.slice(0, cfg.find.max_targets), strengthen: strengthen.slice(0, 50) };
   L.write('targets', out);

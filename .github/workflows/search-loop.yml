@@ -58,6 +58,9 @@ on:
         required: false
       INDEXNOW_KEY:
         required: false
+      # v1.6.0: optional top-10 read for the can-be-#1 lane (Brave Search API, free credit only).
+      BRAVE_SEARCH_API_KEY:
+        required: false
     outputs:
       mode:
         value: ${{ jobs.loop.outputs.mode }}
@@ -83,6 +86,7 @@ jobs:
       CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}
+      BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
       NODE_OPTIONS: ${{ inputs.node_options }}
       # Only the default branch publishes. A run on any other branch builds,
       # gates and reports, and uploads the pages as an artifact: a proof run.

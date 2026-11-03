@@ -2,7 +2,7 @@
 
 One shared search growth engine for every selling site. Each site runs the same loop, at $0:
 
-1. **FIND** (weekly) — searches the site can win: its own Search Console rows at positions ~8–30, Google and Bing autocomplete seeded from measured queries and topic seeds, question expansions, Bing Webmaster keyword data when a key exists, local question sets when the site is local. Scored "easy to win" from free signals only. Same-intent variants ("overcome / avoid / stop X") become one target. A free-model screen drops searches that belong to another meaning or brand. Never paid or grounded model calls, never SERP scraping. A signal that could not be read is written `not read: <reason>`.
+1. **FIND** (weekly) — searches the site can win: its own Search Console rows at positions ~8–30, Google and Bing autocomplete seeded from measured queries and topic seeds, question expansions, Bing Webmaster keyword data when a key exists, local question sets when the site is local. Since v1.6.0 every search goes into one of **two lanes** (see "Two lanes: can be #1 now, and striking distance"): about 2 of every 3 new pages are searches the site can be #1 for straight away (a competition score), about 1 in 3 are searches it already ranks 8–30 for. Same-intent variants ("overcome / avoid / stop X") become one target. A free-model screen drops searches that belong to another meaning or brand. Never paid or grounded model calls, never SERP scraping. A signal that could not be read is written `not read: <reason>`.
 2. **BUILD** (daily) — one page per easy search: direct answer first, sourced facts (each source URL must answer 200), FAQ, structured data, internal links, a "Related questions" block placed on relevant existing pages (so no new page is an orphan), and it ends in the site's one action. **Published straight away** once it passes the gate.
 3. **CHECK + REPAIR** — every page at 2, 4 and 8 weeks and 90 days: Search Console clicks/position, index status, AI-referral visits (referrer hostname only) and AI-bot hits where Cloudflare analytics is readable. Winners seed more pages on their topic; pages near page 1 are strengthened with a before/after hash and **undone automatically** if they get worse; 90 days with no impressions → merged into a stronger page with a 301 (logged in `consolidation-ledger.json`).
 4. **REPORT** — every run uploads the Actions artifact **`search-loop-week`** (schema [`search-loop-week-v1`](schema/search-loop-week-v1.json)).
@@ -58,6 +58,18 @@ For a site that already has an approved editorial calendar (Hicks, 3 Nov 2026), 
 - `local.substance` (config): what every page naming one of `local.city` / `local.neighbourhoods` must carry (communities served, landmarks, local resources with sources), so a local page is never a city-name swap.
 - `distinct.near_dup` (config, at most 0.35): a stricter near-duplicate threshold between pages.
 
+## Two lanes: can be #1 now, and striking distance (v1.6.0)
+
+Her ruling, 3 Nov 2026: "we shouldnt be working hard to get from 10 to 1 and sometime we do that but sometimes we find where we can just be 1 or closer to 1 and move forward". Code: `src/compete.mjs`.
+
+- **Lanes** (config `competition.lanes`, default `{ can_be_one: 2, striking: 1 }`). FIND ranks every search twice: a can-be-#1 score and the striking score (`scoreCandidate`: Search Console position 8–30, autocomplete, Bing). Each lane takes its best search in turn; BUILD picks the next search from the lane behind its share of the pages made, so skips never skew the split. Every target and every `pages.json` entry carries `lane`, `score`, `scores` and `reasons`.
+- **Can-be-#1 signals, free, from Search Console** (always on):
+  - *Easy-win neighbours*: searches where the site reached the top 3 with ≤50 impressions, or an engine page in the top 3 at its 2-week check. Their close variants are seeded into autocomplete first, local variants are made for each of the site's other places, and a candidate sharing ≥50% of an easy win's words scores up.
+  - *Nobody answers this exact question*: a 4+ word search no site page covers, whose parts the site already holds at position ≤10.
+- **Top-10 read** (optional, provider interface; first provider Brave Search API). Off unless `BRAVE_SEARCH_API_KEY` is passed; without it FIND writes `not read: no BRAVE_SEARCH_API_KEY` and uses the Search Console signals only. Plain rules over the top 10: directories (Psychology Today, Zocdoc, Yelp, Thumbtack, Angi …), forums (Reddit, Quora …), off-target national pages for a local search, thin or old pages (count as weak), pages that answer the exact question (count as strong); the top 3 count double. A weak top 10 = a high can-be-#1 score. Only counts and reasons are stored, never the results. Google is never scraped.
+- **$0 only** (her rule: "starting with free credits and not going above $0"). Brave's free credit is $5/month = 1,000 searches. The fleet uses at most 70%: each site gets `floor(1000 × 0.7 / 14)` = 50 reads a month and 15 a day (`competition.top10.monthly_budget` / `daily_budget` can lower it, never raise it). Usage and Brave's `x-ratelimit-*` headers are kept in `serp-budget.json`; a 402/429, or a monthly quota header with 30% or less left, ends reads for the month with `not read: Brave free budget used`.
+- **Learning**: every 2/4/8-week checkpoint records `lane` and `top3`. The week report's `lanes` block shows, per lane, pages, measured, top3 and `hit_rate`. Weekly, each can-be-#1 weight (`neighbour`, `unanswered`, `weak_top10`) moves 10% up (≥50% of ≥5 pages picked on it reached the top 3) or down (<20%), within 0.5×–2× its default; each change is logged in `lane-weights.json` and in the report.
+
 ## Distinct pages and the per-site cap (v1.3.0)
 
 Her ruling, 3 Nov 2026: the search loop publishes only distinct pages, under a per-site cap that grows with results. Five sites lost most of their Google exposure under thousands of near-identical template pages and recovered only after cutting to a few dozen to a few hundred distinct pages. This replaces the old fixed pace (10/day, +5/week, cap 30).
@@ -99,6 +111,7 @@ The week report says: `published`, `held_by_cap`, `redirected` (with the existin
 | `publisher` | no | `{name, url}` for Article author/publisher (an organization; never an invented person) |
 | `template` | no | `stylesheets[]`, `og_image{url,width,height}`, `header_html`, `footer_html`, `section_name` |
 | `related` | no | `max_pages_per_new_page` (2), `scan_dirs[]`, `skip_dirs[]` |
+| `competition` | no | `lanes` `{can_be_one: 2, striking: 1}`, `top10` `{provider: brave\|none, daily_budget: 15, monthly_budget: 50}` (can lower, never raise past the fleet ceiling), `min_can_be_one` 15 |
 | `find` | no | `gsc_position_min` 8, `gsc_position_max` 30, `max_autocomplete_calls` 80, `max_targets` 200, `exclude_words[]` |
 | `gsc` | no | `site_url` or `site_url_env` (default env `GSC_SITE_URL`) |
 | `llm.routing_file` | no | the site's own $0 routing file (OpenRouter `:free` models); default [`config/free-models.json`](config/free-models.json) |
@@ -135,13 +148,14 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}   # no-billing project only
+      BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}   # optional top-10 read, free credit only
 ```
 
 Optional inputs: `setup_command` (e.g. `npm ci --ignore-scripts`), `post_build_command` (the site's own build that folds new pages into sitemaps — runs only when pages were published), `commit_command` (the site's own commit helper), `node_options`, `stage`, `config`. Only the default branch publishes; a run on any other branch is a **proof run** (builds, gates, reports, uploads the pages as `search-loop-pages`, commits nothing). Add `.search-loop-engine/` and `.search-loop-run.log` to the site's `.gitignore`.
 
 3. **Secrets** — all optional; a missing one is a `NAMED NOTE [SECRET_MISSING_…]` line (job summary; the run stays green) and the stages that need it write `not read`. No paid key is ever used: the model route is $0-only (`max_cost_usd: 0`, `fallback_to_paid: false`, a non-zero `usage.cost` fails loud).
 
-4. **Ledger** (committed to the site under `ledger_dir`): `targets.json`, `discovery-receipt.json` (every host called, cost 0), `pages.json` (every page, checks, strengthen hashes), `drafts/`, `snapshots/` (pre-strengthen bytes for undo), `cap.json` (the per-site cap, its history and held counts), `consolidation-ledger.json`, `winners.json`, `ai-daily.json`, `runs.json`, `search-loop-week.json`.
+4. **Ledger** (committed to the site under `ledger_dir`): `targets.json`, `discovery-receipt.json` (every host called, cost 0), `pages.json` (every page, checks, strengthen hashes), `drafts/`, `snapshots/` (pre-strengthen bytes for undo), `cap.json` (the per-site cap, its history and held counts), `consolidation-ledger.json`, `winners.json`, `ai-daily.json`, `runs.json`, `serp-budget.json` (top-10 reads used and Brave quota headers), `lane-weights.json` (can-be-#1 weights and their change log), `search-loop-week.json`.
 
 ## Exit codes and Rule 0
 

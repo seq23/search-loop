@@ -2,7 +2,7 @@
 // what a valid config is; validators/validate.mjs and the CLI both call it.
 import fs from 'node:fs';
 import path from 'node:path';
-import { CAP_DEFAULTS, DISTINCT_DEFAULTS } from './defaults.mjs';
+import { CAP_DEFAULTS, DISTINCT_DEFAULTS, COMPETE_DEFAULTS } from './defaults.mjs';
 
 export const CONFIG_SCHEMA = 'search-loop-config-v1';
 export const HEALTH_GATES = ['none', 'health', 'dental'];
@@ -24,6 +24,7 @@ export const DEFAULTS = {
   analytics: { ai_referrals: 'none', ai_bot_hits: 'none' },
   conversions: { source: 'none' },
   related: { max_pages_per_new_page: 2, scan_dirs: ['.'], skip_dirs: [] },
+  competition: COMPETE_DEFAULTS,
   find: { gsc_position_min: 8, gsc_position_max: 30, max_autocomplete_calls: 80, max_targets: 200 },
 };
 
@@ -82,6 +83,12 @@ export function checkConfig(c) {
   for (const s of c.shares_audience_with || []) need(s && (s.ledger_url || s.ledger_path), 'shares_audience_with entries need ledger_url or ledger_path');
   if (c.local) need(typeof c.local.city === 'string', 'local.city is required when local is set');
   if (c.indexnow) need(typeof c.indexnow.key === 'string' && c.indexnow.key.length >= 8, 'indexnow.key must be the key in the site\'s key file');
+  const comp = c.competition || {};
+  const lanes = { ...COMPETE_DEFAULTS.lanes, ...(comp.lanes || {}) };
+  need(Number.isInteger(lanes.can_be_one) && Number.isInteger(lanes.striking) && lanes.can_be_one >= 0 && lanes.striking >= 0 && lanes.can_be_one + lanes.striking > 0, 'competition.lanes: { can_be_one, striking } whole numbers >= 0, not both 0 (default 2 and 1)');
+  const t10 = { ...COMPETE_DEFAULTS.top10, ...(comp.top10 || {}) };
+  need(['brave', 'none'].includes(t10.provider), 'competition.top10.provider must be brave | none');
+  need(Number.isInteger(t10.daily_budget) && t10.daily_budget >= 0 && Number.isInteger(t10.monthly_budget) && t10.monthly_budget >= 0, 'competition.top10.daily_budget / monthly_budget: whole numbers >= 0 (a site can lower its share, never raise it past the fleet ceiling)');
   const lowered = [...(c.protected_paths || [])].map(String);
   if (o.dir) need(!lowered.some((pp) => pp === o.dir || o.dir.startsWith(pp + '/')), 'output.dir sits inside a protected path');
   return p;

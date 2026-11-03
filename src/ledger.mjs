@@ -11,6 +11,8 @@ export const FILES = {
   winners: 'winners.json',
   runs: 'runs.json',
   ai_daily: 'ai-daily.json',
+  serp_budget: 'serp-budget.json',
+  lane_weights: 'lane-weights.json',
   drafts: 'drafts',
   snapshots: 'snapshots',
 };
