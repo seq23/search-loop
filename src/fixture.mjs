@@ -18,7 +18,7 @@ export const FIXTURE_CONFIG_RAW = {
 };
 
 export function fixtureConfig(root = '/nonexistent') {
-  return { ...DEFAULTS, ...FIXTURE_CONFIG_RAW, pace: { ...DEFAULTS.pace }, related: { ...DEFAULTS.related }, find: { ...DEFAULTS.find }, root, ledger_dir: 'data/search-loop' };
+  return { ...DEFAULTS, ...FIXTURE_CONFIG_RAW, cap: { ...DEFAULTS.cap }, distinct: { ...DEFAULTS.distinct }, related: { ...DEFAULTS.related }, find: { ...DEFAULTS.find }, root, ledger_dir: 'data/search-loop' };
 }
 
 const para = (topic, n) => `${topic} works best when you keep it small and repeatable. Pick one block of time, write down the three outcomes that matter, and leave space for the work that always shows up unplanned. ` +

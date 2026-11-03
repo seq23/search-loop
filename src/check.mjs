@@ -11,14 +11,15 @@ import { centralDate, daysBetween, sha256, fetchText, tokenOverlap, pastSoft, pr
 import { render, withoutRelatedLink } from './render.mjs';
 import { gate } from './gate.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
-import { nextPace, currentPace } from './pace.mjs';
 import { buildIndex } from './site-index.mjs';
 import { verifyFacts } from './build.mjs';
+import { publishedFrozen } from './config.mjs';
 
 export const CHECKPOINTS = [['w2', 14], ['w4', 28], ['w8', 56], ['d90', 90]];
 export const NEAR_PAGE_ONE = [10.5, 20];
 export const UNDO_IF_WORSE_BY = 2;
 export const STRENGTHEN_SETTLE_DAYS = 14;
+export const INDEX_WINDOW_DAYS = 14;
 
 export function dueCheckpoints(page, today) {
   const age = daysBetween(page.published_at, today);
@@ -61,9 +62,14 @@ async function gscPages(cfg, now, fetchImpl) {
   return { map, site };
 }
 
-export async function check(cfg, { rules, mode, now = new Date(), fetchImpl = fetch, chat = freeChat, notes = [] } = {}) {
+export async function check(cfg, { rules: modeRules, mode, now = new Date(), fetchImpl = fetch, chat = freeChat, notes = [] } = {}) {
   const L = ledger(cfg);
   const today = centralDate(now);
+  // Published pages frozen (Horse, Hicks): checkpoints are still measured and
+  // recorded, but nothing already published is strengthened, undone or merged.
+  const frozen = publishedFrozen(cfg);
+  const rules = frozen ? { ...modeRules, strengthen: false, undo: false, merge: false } : modeRules;
+  if (frozen) notes.push('CHECK: published pages are frozen on this site; checkpoints are recorded, no page is strengthened, undone or merged');
   const runs = L.read('runs', { last_check: null, history: [] });
   const res = { checked: 0, wins: 0, strengthened: 0, undone: 0, merged: 0, indexnow: 0, indexed: null, ai: null };
   if (rules.check === 'weekly' && runs.last_check && daysBetween(runs.last_check, today) < 6) {
@@ -103,23 +109,22 @@ export async function check(cfg, { rules, mode, now = new Date(), fetchImpl = fe
   const g = live.length ? await gscPages(cfg, now, fetchImpl) : { map: new Map() };
   if (g.notRead) notes.push(`not read: Search Console page data (${g.notRead})`);
 
-  // Index status for the pace (pages 14-42 days old), URL Inspection, free.
+  // Index status (pages 14-42 days old) for the report, URL Inspection, free.
   let measured = 0; let indexed = 0; let inspectFail = null;
   for (const p of live) {
     const age = daysBetween(p.published_at, today);
-    if (age < cfg.pace.index_window_days || age > 42) continue;
+    if (age < INDEX_WINDOW_DAYS || age > 42) continue;
     if (!p.indexed_at || (!p.indexed && daysBetween(p.inspected_at || p.published_at, today) >= 3)) {
       if (pastSoft()) { inspectFail = "the run's time budget was used before every page was inspected"; break; }
       const r = await inspectUrl(g.site, p.url, { fetchImpl });
       if (!r.ok) { inspectFail = r.reason; break; }
       p.inspected_at = today; p.indexed = r.indexed; if (r.indexed && !p.indexed_at) p.indexed_at = today;
     }
-    measured++; if (p.indexed && daysBetween(p.published_at, p.indexed_at) <= cfg.pace.index_window_days + 7) indexed++;
+    measured++; if (p.indexed && daysBetween(p.published_at, p.indexed_at) <= INDEX_WINDOW_DAYS + 7) indexed++;
   }
   res.indexed = live.filter((p) => p.indexed).length;
-  const sample = inspectFail ? { measured, indexed: null, reason: `URL Inspection: ${inspectFail}` } : { measured, indexed, source: 'Search Console URL Inspection' };
-  const pace = nextPace(cfg, currentPace(cfg, L), sample, now);
-  if (pace.reason !== 'already evaluated this week') { L.write('pace', pace.pace); notes.push(`pace: ${pace.reason}`); }
+  if (inspectFail) { res.indexNote = `URL Inspection: ${inspectFail}`; notes.push(`not read: index status for ${measured ? 'some' : 'the'} pages 14-42 days old (${res.indexNote})`); }
+  res.indexedRecent = { measured, indexed };
 
   progress('check', 'checkpoints, strengthen, undo, merge');
   const index = buildIndex(cfg, { withText: true });
@@ -169,7 +174,7 @@ async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, note
   const draft = JSON.parse(fs.readFileSync(draftFile, 'utf8'));
   const site = cfg.gsc?.site_url || process.env[cfg.gsc?.site_url_env || 'GSC_SITE_URL'];
   const q = await searchAnalytics(site, { startDate: dateDaysAgo(31), endDate: dateDaysAgo(3), dimensions: ['query'], dimensionFilterGroups: [{ filters: [{ dimension: 'page', operator: 'equals', expression: p.url }] }], rowLimit: 20 }, { fetchImpl });
-  const queries = q.ok ? q.rows.map((r) => r.keys[0]) : [p.query];
+  const queries = [...new Set([...(q.ok ? q.rows.map((r) => r.keys[0]) : [p.query]), ...(p.extra_queries || [])])];
   const r = await chat({ cfg, fetchImpl, messages: [
     { role: 'system', content: `You improve one page for ${cfg.site_name}. Audience: ${cfg.audience}. Voice: ${cfg.voice}. Return ONLY JSON.` },
     { role: 'user', content: `The page "${draft.h1}" sits just off page one for: ${queries.join(' | ')}.\nIts sections: ${draft.sections.map((s) => s.heading).join(' | ')}.\nReturn {"sections":[{"heading":"a question from the searches not yet answered","paragraphs":["120-180 words"]}],"faq":[{"q":"...","a":"40-60 words"}]} with 1-2 new sections and 1 new FAQ. No statistics, named people, credentials, reviews or outcome promises.` },

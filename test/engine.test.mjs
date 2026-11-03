@@ -8,6 +8,7 @@ import { run } from '../bin/search-loop.mjs';
 import { FIXTURE_CONFIG_RAW, fixtureDraft } from '../src/fixture.mjs';
 import { selfTest } from '../src/self-test.mjs';
 import { checkReport, REPORT_FIELDS } from '../src/report.mjs';
+import { isoWeek } from '../src/util.mjs';
 import { lowest, resolveMode, MODE_RULES } from '../src/mode.mjs';
 import { scoreCandidate, claimedElsewhere } from '../src/find.mjs';
 import { withRelatedLink, withoutRelatedLink } from '../src/render.mjs';
@@ -34,7 +35,7 @@ function site({ cfg = {} } = {}) {
 }
 
 // One fake internet: Google token + Search Console + autocomplete + sources + live pages + IndexNow.
-function fakeFetch({ gscRows = [], pageRows = [], inspectIndexed = true, live = true, calls = [] } = {}) {
+function fakeFetch({ gscRows = [], pageRows = [], dateRows = [], inspectIndexed = true, live = true, calls = [] } = {}) {
   return async (url, init = {}) => {
     const u = String(url);
     calls.push(u);
@@ -42,7 +43,7 @@ function fakeFetch({ gscRows = [], pageRows = [], inspectIndexed = true, live = 
     if (u.startsWith('https://oauth2.googleapis.com/token')) return json(200, { access_token: 'tok', expires_in: 3600 });
     if (u.includes('/searchAnalytics/query')) {
       const body = JSON.parse(init.body);
-      return json(200, { rows: body.dimensions[0] === 'page' ? pageRows : body.dimensions.length === 1 ? [{ keys: ['plan week founder'], clicks: 0, impressions: 5, position: 14 }] : gscRows });
+      return json(200, { rows: body.dimensions[0] === 'date' ? dateRows : body.dimensions[0] === 'page' ? pageRows : body.dimensions.length === 1 ? [{ keys: ['plan week founder'], clicks: 0, impressions: 5, position: 14 }] : gscRows });
     }
     if (u.includes('urlInspection')) return json(200, { inspectionResult: { indexStatusResult: { verdict: inspectIndexed ? 'PASS' : 'NEUTRAL', coverageState: 'x' } } });
     if (u.includes('suggestqueries.google.com')) { const q = new URL(u).searchParams.get('q'); return json(200, [q, [`${q} for founders`, `${q} template`]]); }
@@ -62,10 +63,26 @@ const goodChat = (calls = []) => async ({ messages }) => {
   const cap = q.charAt(0).toUpperCase() + q.slice(1);
   d.h1 = cap.length > 28 ? cap : `${cap}: a simple guide`;
   d.title_lead = cap.slice(0, 44);
+  // a different answer per search (the distinct gate compares answers too)
+  const vocab = 'calendar outcome review morning block focus habit notebook energy meeting inbox priority deadline client launch budget hiring sprint retro goal metric team weekend travel sleep coffee walk call email draft invoice roadmap pitch investor demo feedback lesson routine checklist template sunday friday quarter month season'.split(' ');
+  const h = crypto.createHash('sha256').update(q).digest();
+  const words = vocab.map((w, i) => [h[i % 32] * 64 + i, w]).sort((a, b) => a[0] - b[0]).map((x) => x[1]).slice(0, 40);
+  d.direct_answer = `${cap} is ${words.join(' ')}.`;
   // make each page distinct enough to pass the near-duplicate check
   d.sections = d.sections.map((s, i) => ({ heading: `${s.heading} (${q})`, paragraphs: s.paragraphs.map((p) => `${p} This part is about ${q} and step ${i} of ${q.split(' ').reverse().join(' ')}.`.replace(/Weekly planning works/, `${cap} works`)) }));
   delete d.facts[0].verified;
   return { ok: true, answer: '```json\n' + JSON.stringify(d) + '\n```' };
+};
+
+// Pages whose body text is really different per search (goodChat's bodies share
+// most sentences, so the near-duplicate gate lets only a few through).
+const distinctChat = (calls = []) => async (args) => {
+  const d = JSON.parse((await goodChat(calls)(args)).answer.replace(/^```json\n|\n```$/g, ''));
+  const q = d.h1;
+  const vocab = 'calendar outcome review morning block focus habit notebook energy meeting inbox priority deadline client launch budget hiring sprint retro goal metric team weekend travel sleep coffee walk call email draft invoice roadmap pitch investor demo feedback lesson routine checklist template sunday friday quarter month season'.split(' ');
+  const text = (seed) => { const h = crypto.createHash('sha256').update(q + seed).digest(); return Array.from({ length: 130 }, (_, i) => vocab[(h[i % 32] + i * h[(i + 7) % 32]) % vocab.length]).join(' ') + '.'; };
+  d.sections = d.sections.map((x, i) => ({ ...x, paragraphs: [text(`a${i}`), text(`b${i}`)] }));
+  return { ok: true, answer: JSON.stringify(d) };
 };
 
 const NOW = new Date('2026-11-02T15:00:00Z');
@@ -216,20 +233,127 @@ test('CHECK: 2/4/8-week checkpoints, strengthen near page 1, undo when worse, me
   assert.ok(!fs.existsSync(path.join(root, cons.merges[0].from.replace(/^\//, ''), 'index.html')));
 });
 
-test('pace grows when most pages are indexed, halves when they are not, logs why', async () => {
+// v1.3.0: the fixed pace (10/day, +5/week, cap 30) is replaced by an
+// outcome-gated per-site cap (her ruling, 3 Nov 2026).
+const days = (from, n, perDay) => Array.from({ length: n }, (_, i) => ({ keys: [new Date(new Date(from).getTime() + i * 86400000).toISOString().slice(0, 10)], clicks: 0, impressions: perDay, position: 12 }));
+// NOW = 2026-11-02: last 28 days = 2026-10-03..2026-10-30, the 28 before = 2026-09-05..2026-10-02.
+const window = (prevPerDay, lastPerDay) => [...days('2026-09-05', 28, prevPerDay), ...days('2026-10-03', 28, lastPerDay)];
+function seed(root, queries) {
+  fs.mkdirSync(path.join(root, 'data/search-loop'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'data/search-loop/targets.json'), JSON.stringify({ schema: 'search-loop-targets-v1', week: isoWeek(NOW), targets: queries.map((query, i) => ({ query, kind: 'new', score: 50 - i, signals: {} })), strengthen: [] }));
+}
+const DISTINCT_QUERIES = ['how to pay contractors on time', 'invoice reminders for freelancers', 'hiring your first engineer', 'quarterly board meeting agenda', 'pricing a consulting retainer', 'choosing a payroll provider'];
+const capFile = (root) => JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/cap.json')));
+
+test('the cap rises only when Google impressions grow, falls when they drop, holds without Search Console data, logs why', async () => {
+  const { nextCap } = await import('../src/cap.mjs');
+  const cfg = { cap: {} };
+  assert.equal(nextCap(cfg, { max_live_pages: 50, history: [] }, { last: 120, prev: 100 }, NOW).cap.max_live_pages, 55);
+  assert.equal(nextCap(cfg, { max_live_pages: 50, history: [] }, { last: 80, prev: 100 }, NOW).cap.max_live_pages, 45);
+  assert.equal(nextCap(cfg, { max_live_pages: 50, history: [] }, { last: 100, prev: 100 }, NOW).cap.max_live_pages, 50);
+  assert.equal(nextCap(cfg, { max_live_pages: 10, history: [] }, { last: 1, prev: 100 }, NOW).cap.max_live_pages, 10, 'never under min_pages');
+  const nd = nextCap(cfg, { max_live_pages: 50, history: [] }, { notRead: 'no rows' }, NOW);
+  assert.equal(nd.cap.max_live_pages, 50); assert.equal(nd.held, true); assert.match(nd.reason, /no Search Console numbers/);
+  // End to end: a fresh site starts at 20 (start_pages); growth -> 22, drop -> 18, no rows -> 20 held with a named note.
+  const cases = [[window(10, 20), 22, /^cap: up from 20 to 22/m], [window(20, 10), 18, /^cap: down from 20 to 18/m], [[], 20, /NAMED NOTE \[CAP_HELD_NO_DATA\]/], [window(0, 0).slice(28), 20, /CAP_HELD_NO_DATA.*nothing to compare/]];
+  for (const [dateRows, want, note] of cases) {
+    const root = site();
+    const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch({ dateRows }), chat: goodChat() });
+    const c = capFile(root);
+    assert.equal(c.max_live_pages, want);
+    assert.match(r.report.notes.join('\n'), note);
+    assert.equal(r.report.cap.max_live_pages, want);
+    assert.ok(r.report.cap.why.length > 0);
+    assert.ok(c.history.length >= 2, 'start and change both logged');
+    // once a week: a second run the same week does not move it again
+    await run({ root, now: new Date('2026-11-03T15:00:00Z'), 'global-mode': 'normal', fetchImpl: fakeFetch({ dateRows: window(1, 1000) }), chat: goodChat() });
+    assert.equal(capFile(root).max_live_pages, want);
+  }
+});
+
+test('over the cap nothing publishes; under it only the room publishes; held searches are counted', async () => {
+  const root = site({ cfg: { cap: { max_live_pages: 2 } } });
+  seed(root, DISTINCT_QUERIES);
+  const r = await run({ root, now: NOW, 'global-mode': 'normal', stage: 'build', fetchImpl: fakeFetch(), chat: distinctChat() });
+  const live = () => JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pages.json'))).pages.filter((p) => p.status === 'live').length;
+  assert.equal(live(), 2, 'filled up to the cap and no further');
+  assert.ok(r.did.build.held > 0);
+  assert.equal(r.report.held_by_cap, r.did.build.held);
+  assert.deepEqual(r.report.cap, { ...r.report.cap, max_live_pages: 2, live: 2, room: 0 });
+  // next day, at the cap: nothing publishes, the model is never asked
+  const calls = [];
+  const r2 = await run({ root, now: new Date('2026-11-03T15:00:00Z'), 'global-mode': 'normal', stage: 'build', fetchImpl: fakeFetch(), chat: distinctChat(calls) });
+  assert.equal(r2.did.build.published, 0);
+  assert.equal(calls.filter((m) => /Search to answer/.test(m[1]?.content)).length, 0);
+  assert.equal(live(), 2);
+  assert.match(r2.report.notes.join('\n'), /BUILD held by the cap: 2 live engine page\(s\), cap 2/);
+  assert.ok(r2.report.held_by_cap > r.report.held_by_cap, 'held counts add up over the week');
+  // negative proof: the same site with room publishes more than 2
+  const open = site({ cfg: { cap: { max_live_pages: 50 } } });
+  seed(open, DISTINCT_QUERIES);
+  const r3 = await run({ root: open, now: NOW, 'global-mode': 'normal', stage: 'build', fetchImpl: fakeFetch(), chat: distinctChat() });
+  assert.ok(r3.did.build.published > 2, `published ${r3.did.build.published}`);
+  assert.equal(r3.did.build.held, 0);
+});
+
+test('a same-intent search becomes a strengthen brief for the existing URL, never a new page', async () => {
   const root = site();
-  await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: goodChat() });
-  const d16 = new Date('2026-11-18T15:00:00Z');
-  await run({ root, now: d16, 'global-mode': 'normal', stage: 'check', fetchImpl: fakeFetch({ inspectIndexed: true }), chat: goodChat() });
-  let pace = JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pace.json')));
-  assert.equal(pace.per_day, 15);
-  assert.match(pace.history.at(-1).reason, /indexed/);
+  // a page only the sitemap knows about (built elsewhere, not in the checkout)
+  fs.writeFileSync(path.join(root, 'sitemap.xml'), '<urlset><url><loc>https://example.com/guides/weekly-budget-template/</loc></url></urlset>');
+  seed(root, ['weekly planning for founders template', 'how to run a weekly review for my planning', 'weekly budget template', 'how to pay contractors on time']);
+  const calls = [];
+  const r = await run({ root, now: NOW, 'global-mode': 'normal', stage: 'build', fetchImpl: fakeFetch(), chat: goodChat(calls) });
+  const book = JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pages.json')));
+  const by = Object.fromEntries(book.redirected.map((x) => [x.query, x.url]));
+  assert.equal(by['weekly planning for founders template'], 'https://example.com/weekly-planning/');
+  assert.equal(by['how to run a weekly review for my planning'], 'https://example.com/weekly-review/');
+  assert.equal(by['weekly budget template'], 'https://example.com/guides/weekly-budget-template/');
+  for (const q of Object.keys(by)) assert.ok(!book.pages.some((p) => p.query === q), `no page for "${q}"`);
+  assert.equal(calls.filter((m) => Object.keys(by).some((q) => m[1]?.content.includes(`"${q}"`))).length, 0, 'no model call spent on a same-intent search');
+  const t = JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/targets.json')));
+  assert.ok(t.strengthen.some((x) => x.query === 'weekly planning for founders template' && x.page === '/weekly-planning/' && x.from === 'distinct-gate'));
+  assert.ok(r.report.redirected.some((x) => x.query === 'weekly budget template' && x.strengthen === 'https://example.com/guides/weekly-budget-template/'));
+  // negative proof: the distinct search still publishes
+  assert.ok(book.pages.some((p) => p.query === 'how to pay contractors on time'), 'a distinct search is published');
+  // same answer: a second search whose draft repeats an engine page's answer is redirected after drafting
   const root2 = site();
-  await run({ root: root2, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: goodChat() });
-  await run({ root: root2, now: d16, 'global-mode': 'normal', stage: 'check', fetchImpl: fakeFetch({ inspectIndexed: false }), chat: goodChat() });
-  pace = JSON.parse(fs.readFileSync(path.join(root2, 'data/search-loop/pace.json')));
-  assert.equal(pace.per_day, 5);
-  assert.match(pace.history.at(-1).reason, /halved/);
+  seed(root2, ['how to pay contractors on time', 'invoice reminders for freelancers']);
+  const sameAnswer = async (args) => { const a = JSON.parse((await goodChat()(args)).answer.replace(/^```json\n|\n```$/g, '')); a.direct_answer = fixtureDraft().direct_answer; return { ok: true, answer: JSON.stringify(a) }; };
+  await run({ root: root2, now: NOW, 'global-mode': 'normal', stage: 'build', fetchImpl: fakeFetch(), chat: sameAnswer });
+  const b2 = JSON.parse(fs.readFileSync(path.join(root2, 'data/search-loop/pages.json')));
+  assert.equal(b2.pages.length, 1);
+  assert.match(b2.redirected[0].matched_by, /same answer/);
+  assert.equal(b2.redirected[0].url, b2.pages[0].url);
+});
+
+test('Horse and Hicks: a published page is never modified, redirected, merged or undone; same-intent searches are skipped', async () => {
+  const { publishedFrozen } = await import('../src/config.mjs');
+  assert.ok(publishedFrozen({ base_url: 'https://horselegalguide.com' }) && publishedFrozen({ base_url: 'https://www.hicksconsulting.org' }));
+  const hashes = (root) => Object.fromEntries(fs.readdirSync(root, { recursive: true }).filter((f) => /\.html$|^_redirects$/.test(f)).map((f) => [f, crypto.createHash('sha256').update(fs.readFileSync(path.join(root, f))).digest('hex')]));
+  const lifecycle = async (frozen) => {
+    const root = site({ cfg: frozen ? { published_pages_frozen: true } : {} });
+    const existing = hashes(root);
+    await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: goodChat() });
+    const book = JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pages.json')));
+    const afterBuild = hashes(root);
+    const rows = (pos, imp = 30) => book.pages.map((x) => ({ keys: [x.url], clicks: 0, impressions: imp, position: pos }));
+    await run({ root, now: new Date('2026-11-30T15:00:00Z'), 'global-mode': 'normal', stage: 'check', fetchImpl: fakeFetch({ pageRows: rows(14) }), chat: goodChat() });
+    await run({ root, now: new Date('2026-12-14T15:00:00Z'), 'global-mode': 'normal', stage: 'check', fetchImpl: fakeFetch({ pageRows: rows(25) }), chat: goodChat() });
+    await run({ root, now: new Date('2027-02-05T15:00:00Z'), 'global-mode': 'normal', stage: 'check', fetchImpl: fakeFetch({ pageRows: [] }), chat: goodChat() });
+    return { root, existing, afterBuild, published: book.pages, end: hashes(root), final: JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pages.json'))) };
+  };
+  const f = await lifecycle(true);
+  assert.ok(f.published.length > 0, 'new pages still publish');
+  for (const [file, h] of Object.entries(f.existing)) assert.equal(f.afterBuild[file], h, `existing ${file} edited by BUILD`);
+  for (const [file, h] of Object.entries(f.afterBuild)) assert.equal(f.end[file], h, `published ${file} changed by CHECK`);
+  assert.ok(!fs.existsSync(path.join(f.root, '_redirects')), 'no redirect written');
+  assert.ok(f.final.pages.every((p) => p.status === 'live' && !p.strengthen && p.checks.w2 && p.checks.w8), 'checkpoints recorded, nothing strengthened, undone or merged');
+  assert.ok(!(f.final.redirected || []).length, 'no strengthen brief on a frozen site');
+  assert.ok(f.final.dropped.some((d) => /skipped, published pages are frozen/.test(d.reason[0])), 'same-intent searches are skipped');
+  // negative proof: the same lifecycle on an unfrozen site does touch published pages
+  const u = await lifecycle(false);
+  assert.ok(Object.entries(u.afterBuild).some(([file, h]) => u.end[file] !== h) || Object.entries(u.existing).some(([file, h]) => u.afterBuild[file] !== h), 'the unfrozen twin changes pages');
+  assert.ok(fs.existsSync(path.join(u.root, '_redirects')));
 });
 
 test('scoring and shared-audience dedupe', () => {

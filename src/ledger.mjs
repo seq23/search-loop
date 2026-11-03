@@ -6,7 +6,7 @@ export const FILES = {
   targets: 'targets.json',
   receipt: 'discovery-receipt.json',
   pages: 'pages.json',
-  pace: 'pace.json',
+  cap: 'cap.json',
   consolidation: 'consolidation-ledger.json',
   winners: 'winners.json',
   runs: 'runs.json',

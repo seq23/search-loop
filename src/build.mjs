@@ -1,5 +1,7 @@
-// BUILD (daily): one page per easy search, published straight away once it
-// passes the gate. Pace from pace.json, capped by the mode.
+// BUILD (daily): one page per easy, DISTINCT search, published straight away
+// once it passes the gate, only while the site is under its outcome-gated cap
+// (cap.mjs). A search with the same intent as an existing page becomes a
+// "strengthen <URL>" brief instead (distinct.mjs).
 import fs from 'node:fs';
 import path from 'node:path';
 import { ledger } from './ledger.mjs';
@@ -9,8 +11,9 @@ import { render, pageRel, pageUrl, withRelatedLink, fitMeta } from './render.mjs
 import { gateReport, LIMITS } from './gate.mjs';
 import { centralDate, slugify, tokenOverlap, shingles, stripTags, sha256, fetchText, daysBetween, pastSoft, progress } from './util.mjs';
 import { intentKey as keyOf } from './find.mjs';
-import { currentPace } from './pace.mjs';
-import { isProtected } from './config.mjs';
+import { currentCap, liveEnginePages, recordHeld, CAP_DEFAULTS } from './cap.mjs';
+import { corpusFor, matchIntent, matchAnswer, engineAnswers, intentWords, siteWordsOf, answerShingles } from './distinct.mjs';
+import { isProtected, publishedFrozen } from './config.mjs';
 
 export const DROP_RETRY_DAYS = 28;
 export const MAX_ATTEMPTS = 3; // one draft + two fix passes, then drop
@@ -83,29 +86,77 @@ export async function verifyFacts(facts, fetchImpl = fetch) {
   return facts;
 }
 
+// Today's per-run guard after the mode (normal: cap.max_per_day 10; slow: 3; off: 0).
+export function perDayLimit(cfg, rules) {
+  if (!rules.build) return 0;
+  const perDay = { ...CAP_DEFAULTS, ...(cfg.cap || {}) }.max_per_day;
+  return rules.build_cap == null ? perDay : Math.min(perDay, rules.build_cap);
+}
+
+// Same intent as an existing page: no new page. The brief goes on the existing
+// strengthen path (targets.json "strengthen", and the engine page's own
+// strengthen queries) and into pages.json "redirected" for the week report.
+export function redirectToStrengthen(L, book, target, match, { today, stage, frozen = false }) {
+  if (frozen) {
+    // Published pages frozen on this site: the search is simply skipped; no brief touches the existing page.
+    const rec = { query: target.query, at: today, reason: [`same intent as ${match.url} (${match.by}); skipped, published pages are frozen on this site`] };
+    book.dropped.push(rec);
+    return rec;
+  }
+  const rec = { query: target.query, at: today, url: match.url, route: match.route, kind: match.kind, matched_by: match.by, matched_text: match.matched_text, stage };
+  book.redirected ||= [];
+  book.redirected.push(rec);
+  book.redirected = book.redirected.slice(-500);
+  const eng = book.pages.find((p) => p.route === match.route && p.status === 'live');
+  if (eng) eng.extra_queries = [...new Set([...(eng.extra_queries || []), target.query])].slice(-10);
+  const t = L.read('targets', null);
+  if (t) {
+    t.strengthen ||= [];
+    if (!t.strengthen.some((x) => x.query === target.query && x.page === match.route)) t.strengthen.unshift({ query: target.query, page: match.route, url: match.url, score: target.score, from: 'distinct-gate', matched_by: match.by, at: today });
+    t.strengthen = t.strengthen.slice(0, 100);
+    L.write('targets', t);
+  }
+  return rec;
+}
+
 export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fetch, chat = freeChat, notes = [] } = {}) {
   const L = ledger(cfg);
   const today = centralDate(now);
-  const result = { published: 0, dropped: 0, attempted: 0, related_links: 0, quota: 0, mode };
+  const result = { published: 0, dropped: 0, attempted: 0, related_links: 0, quota: 0, redirected: 0, held: 0, mode };
   if (!rules.build) { notes.push('BUILD skipped: mode=off'); return result; }
   const book = L.pages();
-  book.pages ||= []; book.dropped ||= [];
-  const pace = currentPace(cfg, L);
+  book.pages ||= []; book.dropped ||= []; book.redirected ||= [];
   const publishedToday = book.pages.filter((p) => p.published_at === today).length;
-  let cap = rules.build_cap == null ? pace.per_day : Math.min(pace.per_day, rules.build_cap);
-  result.quota = Math.max(0, cap - publishedToday);
-  if (!result.quota) { notes.push(`BUILD: today's quota (${cap}) already published`); return result; }
+  const perDay = perDayLimit(cfg, rules);
+  const dayLeft = Math.max(0, perDay - publishedToday);
+  let capState = currentCap(cfg, L, book);
+  const live = liveEnginePages(book).length;
+  const room = Math.max(0, capState.max_live_pages - live);
+  result.cap = { max_live_pages: capState.max_live_pages, live, room };
+  result.quota = Math.min(dayLeft, room);
+  if (!dayLeft) { notes.push(`BUILD: today's limit (${perDay}) already published`); return result; }
   const targets = (L.read('targets', { targets: [] }).targets || []).filter((t) => t.kind === 'new');
   if (!targets.length) { notes.push('NAMED STOP [NO_TARGETS] FIND has produced no new searches to build; the next weekly FIND refills the list'); return result; }
   const taken = new Set(book.pages.map((p) => keyOf(p.query)));
-  const recentlyDropped = new Set(book.dropped.filter((d) => daysBetween(d.at, today) < DROP_RETRY_DAYS).map((d) => keyOf(d.query)));
+  const recentlyDropped = new Set([...book.dropped, ...book.redirected].filter((d) => daysBetween(d.at, today) < DROP_RETRY_DAYS).map((d) => keyOf(d.query)));
   const queue = targets.filter((t) => !taken.has(keyOf(t.query)) && !recentlyDropped.has(keyOf(t.query)));
   const index = buildIndex(cfg, { withText: true });
+  const corpus = corpusFor(cfg, index, book);
+  const answers = engineAnswers(cfg, L, book);
+  const sw = siteWordsOf(cfg);
   const menu = menuRoutes(cfg);
+  const frozen = publishedFrozen(cfg);
   const siblings = [];
   let failsInRow = 0;
+  let heldStop = false;
+  let considered = 0;
   for (const target of queue) {
-    if (result.published >= result.quota || result.attempted >= result.quota * 2 + 2) break;
+    if (result.published >= room) { heldStop = true; break; }
+    if (result.published >= result.quota || result.attempted >= result.quota * 2 + 2 || considered >= result.quota * 6 + 10) break;
+    considered++;
+    // Distinct intent gate, before any model call: same intent as an existing page -> strengthen brief.
+    const pre = matchIntent(cfg, target.query, corpus);
+    if (pre) { redirectToStrengthen(L, book, target, pre, { today, stage: 'search', frozen }); if (frozen) result.skipped_same_intent = (result.skipped_same_intent || 0) + 1; else result.redirected++; continue; }
     if (pastSoft()) { notes.push(`NAMED NOTE [RUN_TIME_BUDGET] BUILD stopped at the run's time budget after ${result.attempted} search(es); the rest stay queued for the next run`); break; }
     result.attempted++;
     progress('build', `page ${result.attempted} (quota ${result.quota}): "${target.query}"`);
@@ -140,9 +191,13 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
       draft.meta_description = fitMeta(draft.meta_description);
       draft.facts = await verifyFacts(draft.facts, fetchImpl);
       html = render(cfg, { slug, draft, related: related.map((p) => ({ route: p.route, anchor: p.h1 || p.title })), published: today });
+      // Distinct intent gate, after drafting: the H1 the model chose, and the answer it gave.
+      const post = matchIntent(cfg, draft.h1, corpus) || matchAnswer(cfg, draft.direct_answer, answers);
+      if (post) { draft = null; html = null; problems = null; target.__redirect = post; break; }
       ({ problems, notes: gateNotes } = gateReport({ query: target.query, html, facts: draft.facts }, { cfg, corpus: index, siblings, selfRoute: route }));
       if (!problems.length) break;
     }
+    if (target.__redirect) { const m = target.__redirect; delete target.__redirect; redirectToStrengthen(L, book, target, m, { today, stage: 'draft', frozen }); if (frozen) result.skipped_same_intent = (result.skipped_same_intent || 0) + 1; else result.redirected++; continue; }
     if (!html && !problems) { result.model_failed = (result.model_failed || 0) + 1; continue; } // model never answered: retry next run, not a drop
     if (!html || problems?.length) {
       book.dropped.push({ query: target.query, at: today, reason: (problems || ['no draft from the free model']).slice(0, 5) });
@@ -153,11 +208,15 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     fs.mkdirSync(path.dirname(full), { recursive: true });
     fs.writeFileSync(full, html);
     siblings.push({ route, sh: shingles(stripTags(html)) });
+    // Later searches this run are compared with this page too.
+    corpus.push({ route, url: pageUrl(cfg, slug), kind: 'engine', slug, sets: [target.query, draft.h1].map((t) => ({ text: t, words: intentWords(t, sw) })).filter((x) => x.words.size) });
+    answers.push({ route, url: pageUrl(cfg, slug), text: draft.direct_answer, sh: answerShingles(draft.direct_answer) });
     fs.mkdirSync(path.join(L.dir, 'drafts'), { recursive: true });
     fs.writeFileSync(path.join(L.dir, 'drafts', `${slug}.json`), JSON.stringify(draft, null, 2) + '\n');
-    // Never an orphan: link the new page from up to N relevant existing pages.
+    // Never an orphan: link the new page from up to N relevant existing pages
+    // (not on a site whose published pages are frozen: those are never edited).
     const linkedFrom = [];
-    const hosts = pickRelated(cfg, index, target.query, { n: cfg.related.max_pages_per_new_page, editable: true, menu });
+    const hosts = frozen ? [] : pickRelated(cfg, index, target.query, { n: cfg.related.max_pages_per_new_page, editable: true, menu });
     for (const h of hosts) {
       const file = path.join(cfg.root, h.rel);
       const before = fs.readFileSync(file, 'utf8');
@@ -171,11 +230,20 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     result.published++;
     if (gateNotes.length) result.noted = (result.noted || 0) + 1;
   }
+  if (!heldStop && room < dayLeft && result.published >= room && queue.length > considered) heldStop = true;
   return finish();
   function finish() {
+    if (heldStop || room === 0) {
+      result.held = Math.max(0, Math.min(dayLeft - result.published, queue.length - considered));
+      if (result.held) { capState = recordHeld(capState, result.held, now); L.write('cap', capState); }
+      notes.push(`BUILD held by the cap: ${live + result.published} live engine page(s), cap ${capState.max_live_pages} (${capState.reason}); ${result.held} more page(s) today would have gone over it, those searches stay queued`);
+    }
+    if (result.skipped_same_intent) notes.push(`BUILD distinct gate: ${result.skipped_same_intent} search(es) had the same intent as an existing page and were skipped (published pages are frozen on this site, so no strengthen brief)`);
+    if (frozen && result.published) notes.push(`BUILD: published pages are frozen on this site, so no existing page was edited to link the ${result.published} new page(s); link them from the site's own build or nav`);
+    if (result.redirected) notes.push(`BUILD distinct gate: ${result.redirected} search(es) had the same intent as an existing page and became strengthen briefs, not new pages (pages.json "redirected")`);
     L.write('pages', book);
     if (result.noted) notes.push(`BUILD gate notes (not blocking): ${result.noted} published page(s) are outside a length or style aim; each is listed under gate_notes in pages.json`);
-    if (!result.published && !result.stopped) notes.push(`BUILD published 0 of quota ${result.quota}: ${result.dropped} draft(s) failed the gate and were dropped; ${result.model_failed || 0} got no answer from the free model and stay queued`);
+    if (!result.published && !result.stopped && result.quota) notes.push(`BUILD published 0 of quota ${result.quota}: ${result.dropped} draft(s) failed the gate and were dropped; ${result.model_failed || 0} got no answer from the free model and stay queued`);
     return result;
   }
 }
