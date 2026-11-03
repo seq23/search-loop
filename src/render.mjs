@@ -50,7 +50,7 @@ export function pageRel(cfg, slug) {
 export const RELATED_START = '<!-- search-loop:related -->';
 export const RELATED_END = '<!-- /search-loop:related -->';
 
-// draft: { h1, title_lead, meta_description, direct_answer, sections[{heading, paragraphs[]}], faq[{q,a}], facts[{claim, source_url, source_name, verified}] }
+// draft: { h1, title_lead, meta_description, direct_answer, sections[{heading, paragraphs[], bullets?[]}], faq[{q,a}], facts[{claim, source_url, source_name, verified}] }
 export function render(cfg, { slug, draft, related = [], published, modified }) {
   const url = pageUrl(cfg, slug);
   const title = fitTitle(cfg, draft);
@@ -61,7 +61,7 @@ export function render(cfg, { slug, draft, related = [], published, modified }) 
   const actionHref = cfg.action.url;
   const graph = [
     { '@type': 'Article', '@id': `${url}#article`, headline: draft.h1, description: draft.meta_description, url, mainEntityOfPage: url, datePublished: published, dateModified: modified || published, inLanguage: 'en',
-      author: { '@type': 'Organization', name: cfg.publisher?.name || cfg.site_name, url: cfg.publisher?.url || cfg.base_url },
+      author: cfg.author?.name ? { '@type': 'Person', name: cfg.author.name, ...(cfg.author.url ? { url: cfg.author.url } : {}) } : { '@type': 'Organization', name: cfg.publisher?.name || cfg.site_name, url: cfg.publisher?.url || cfg.base_url },
       publisher: { '@type': 'Organization', name: cfg.publisher?.name || cfg.site_name, url: cfg.publisher?.url || cfg.base_url },
       ...(facts.length ? { citation: facts.map((f) => f.source_url) } : {}) },
     { '@type': 'FAQPage', '@id': `${url}#faq`, mainEntity: draft.faq.map((f) => ({ '@type': 'Question', name: f.q, acceptedAnswer: { '@type': 'Answer', text: f.a } })) },
@@ -76,8 +76,8 @@ export function render(cfg, { slug, draft, related = [], published, modified }) 
     `<nav aria-label="Breadcrumb" class="breadcrumb"><a href="/">${esc(cfg.site_name)}</a> › <span>${esc(draft.h1)}</span></nav>`,
     `<h1>${esc(draft.h1)}</h1>`,
     `<p class="direct-answer">${esc(draft.direct_answer)}</p>`,
-    `<p class="page-dates">Published <time datetime="${published}">${humanDate(published)}</time>${modified && modified !== published ? ` · Updated <time datetime="${modified}">${humanDate(modified)}</time>` : ''} · ${esc(cfg.publisher?.name || cfg.site_name)}</p>`,
-    ...draft.sections.map((s) => `<section><h2>${esc(s.heading)}</h2>${s.paragraphs.map((x) => `<p>${esc(x)}</p>`).join('')}</section>`),
+    `<p class="page-dates">Published <time datetime="${published}">${humanDate(published)}</time>${modified && modified !== published ? ` · Updated <time datetime="${modified}">${humanDate(modified)}</time>` : ''} · ${cfg.author?.name ? `By ${cfg.author.url ? `<a href="${esc(cfg.author.url)}">${esc(cfg.author.name)}</a>` : esc(cfg.author.name)}` : esc(cfg.publisher?.name || cfg.site_name)}</p>`,
+    ...draft.sections.map((s) => `<section><h2>${esc(s.heading)}</h2>${s.paragraphs.map((x) => `<p>${esc(x)}</p>`).join('')}${(s.bullets || []).length ? `<ul>${s.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}</section>`),
     facts.length ? `<section data-search-loop="facts"><h2>What the sources say</h2><ul>${facts.map((f) => `<li>${esc(f.claim)} (<a href="${esc(f.source_url)}" rel="noopener">${esc(f.source_name || new URL(f.source_url).hostname)}</a>)</li>`).join('')}</ul></section>` : '',
     `<section class="faq"><h2>Frequently asked questions</h2>${draft.faq.map((f) => `<h3>${esc(f.q)}</h3><p>${esc(f.a)}</p>`).join('')}</section>`,
     related.length ? `<section data-search-loop="related"><h2>Related questions</h2><ul>${related.map((r) => `<li><a href="${esc(r.route)}">${esc(r.anchor)}</a></li>`).join('')}</ul></section>` : '',

@@ -31,13 +31,13 @@ export function fixtureDraft() {
     title_lead: 'How to plan your week as a founder',
     meta_description: 'Plan your week by choosing three outcomes, blocking time for each, and reviewing on Friday. A simple routine busy founders can restart in two minutes.',
     direct_answer: 'Weekly planning is a short routine where you choose the three outcomes that matter most this week, give each one a block of time on your calendar, and review what happened on Friday so next week starts from what is true rather than from a blank page.',
-    sections: [1, 2, 3, 4].map((n) => ({ heading: ['What should a weekly plan include?', 'When should you plan the week?', 'What if the week falls apart?', 'How do you review the week?'][n - 1], paragraphs: [para('Weekly planning', n), para('A daily planning routine', n)] })),
+    sections: [1, 2, 3, 4].map((n) => ({ heading: ['What should a weekly plan include?', 'When should you plan the week?', 'What if the week falls apart?', 'How do you review the week?'][n - 1], paragraphs: [para('Weekly planning', n), para('A daily planning routine', n)], ...(n === 1 ? { bullets: ['Three outcomes for the week', 'One block of time for each', 'A Friday review'] } : {}) })),
     faq: [
       { q: 'How long should weekly planning take?', a: 'Weekly planning should take about twenty minutes once you have a routine. Look at last week, choose three outcomes, block time for each, and stop. If it takes longer, you are planning tasks instead of outcomes, and the plan will be too heavy to restart.' },
       { q: 'Is a daily plan still needed?', a: 'Yes, but it can be short. Each morning, look at the weekly outcomes, pick the one block you will protect today, and write the first action. The weekly plan sets direction, and the daily plan turns it into the next concrete thing you do.' },
       { q: 'What tool should I use?', a: 'Use the tool you already open every day, whether that is a calendar, a notebook or a notes app. The routine matters far more than the tool. Switching tools often feels productive, but it usually resets the habit you were trying to build.' },
       { q: 'What do I do after a missed week?', a: 'Do not try to catch up on everything. Look at what still matters, carry the most important outcome into this week, and drop the rest without guilt. A missed week is information about your load, not a reason to rebuild your whole system.' },
     ],
-    facts: [{ claim: 'The ISO 8601 standard numbers weeks so that each week starts on a Monday.', source_url: 'https://en.wikipedia.org/wiki/ISO_week_date', source_name: 'Wikipedia', verified: true }],
+    facts: [{ claim: 'The ISO 8601 standard numbers weeks so that each week starts on a Monday.', source_url: 'https://en.wikipedia.org/wiki/ISO_week_date', source_name: 'Wikipedia', verified: true }, { claim: 'The Gregorian calendar is the most widely used civil calendar.', source_url: 'https://en.wikipedia.org/wiki/Gregorian_calendar', source_name: 'Wikipedia', verified: true }],
   };
 }

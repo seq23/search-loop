@@ -15,6 +15,7 @@ import { perDayLimit } from '../src/build.mjs';
 import { ledger } from '../src/ledger.mjs';
 import { NamedStop, EXIT, isoWeek, writeJson, startClock, progress, runClock } from '../src/util.mjs';
 import { selfTest } from '../src/self-test.mjs';
+import { draftSlot } from '../src/slot.mjs';
 import { resetLanes, noFreeModelStreak } from '../src/llm.mjs';
 import crypto from 'node:crypto';
 
@@ -127,7 +128,19 @@ async function main() {
     console.log('config OK');
     return;
   }
-  if (cmd !== 'run') throw new NamedStop('UNKNOWN_COMMAND', `"${cmd}" — use run, validate-config or --self-test`, EXIT.PROBLEMS);
+  if (cmd === 'draft-slot') {
+    // v1.5.0: the material for one calendar slot, as JSON; never published, no ledger.
+    const root = path.resolve(o.root || process.cwd());
+    const { cfg, problems } = loadConfig(o.config || 'search-loop.config.json', root);
+    if (problems.length) throw new NamedStop('CONFIG_INVALID', problems.join('; '), EXIT.PROBLEMS);
+    if (!o.slot || !o.out) throw new NamedStop('SLOT_INVALID', 'draft-slot needs --slot <slot.json> and --out <draft.json>', EXIT.PROBLEMS);
+    const r = await draftSlot(cfg, JSON.parse(fs.readFileSync(path.resolve(root, o.slot), 'utf8')));
+    writeJson(path.resolve(root, o.out), r);
+    if (!r.ok) throw new NamedStop(r.stop, r.reason, r.stop === 'FREE_MODEL_KEY_MISSING' ? EXIT.CREDENTIAL : EXIT.PROBLEMS);
+    console.log(`draft-slot: ${r.words} words by ${r.model} in ${r.attempts} attempt(s) -> ${o.out}`);
+    return;
+  }
+  if (cmd !== 'run') throw new NamedStop('UNKNOWN_COMMAND', `"${cmd}" — use run, draft-slot, validate-config or --self-test`, EXIT.PROBLEMS);
   // Hard ceiling: a run that is still going this long after its clock started is
   // stuck somewhere no timeout covers; end it loudly with the stage it is in.
   const hardMin = Number(process.env.SEARCH_LOOP_HARD_MINUTES || 55);

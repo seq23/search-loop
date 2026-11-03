@@ -69,8 +69,8 @@ const goodChat = (calls = []) => async ({ messages }) => {
   const words = vocab.map((w, i) => [h[i % 32] * 64 + i, w]).sort((a, b) => a[0] - b[0]).map((x) => x[1]).slice(0, 40);
   d.direct_answer = `${cap} is ${words.join(' ')}.`;
   // make each page distinct enough to pass the near-duplicate check
-  d.sections = d.sections.map((s, i) => ({ heading: `${s.heading} (${q})`, paragraphs: s.paragraphs.map((p) => `${p} This part is about ${q} and step ${i} of ${q.split(' ').reverse().join(' ')}.`.replace(/Weekly planning works/, `${cap} works`)) }));
-  delete d.facts[0].verified;
+  d.sections = d.sections.map((s, i) => ({ ...s, heading: `${s.heading} (${q})`, paragraphs: s.paragraphs.map((p) => `${p} This part is about ${q} and step ${i} of ${q.split(' ').reverse().join(' ')}.`.replace(/Weekly planning works/, `${cap} works`)) }));
+  delete d.facts[0].verified; delete d.facts[1].verified;
   return { ok: true, answer: '```json\n' + JSON.stringify(d) + '\n```' };
 };
 

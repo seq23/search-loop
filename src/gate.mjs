@@ -132,7 +132,12 @@ export function gateReport(page, ctx) {
   const lastLink = [...main.matchAll(/<a\s[^>]*href=["']([^"']+)["']/gi)].pop()?.[1] || '';
   if (!(lastLink === cfg.action.url || lastLink === actionAbs || lastLink === cfg.base_url + actionAbs)) p.push(`action: the page must end in the site's one action (${cfg.action.url})`);
   // Sourced facts; nothing invented.
-  if (verifiedFacts.length < 1) p.push('facts: needs at least one fact whose source URL answered 200');
+  // Page shape (v1.5.0): at least 2 distinct sources that answered 200, and at least one list or
+  // table in the body itself (the sources and related blocks do not count).
+  const distinctSources = new Set(verifiedFacts.map((f) => f.source_url.replace(/[#?].*$/, '').replace(/\/$/, '')));
+  if (distinctSources.size < 2) p.push(`facts: needs at least 2 distinct sources whose URLs answered 200 (found ${distinctSources.size})`);
+  const bodySections = [...main.matchAll(/<section(?![^>]*data-search-loop=)(?![^>]*class=["']faq)[^>]*>([\s\S]*?)<\/section>/gi)].map((m) => m[1]).join(' ');
+  if (!/<(ul|ol|table)\b/i.test(bodySections)) p.push('shape: the body needs at least one list or table (give one section "bullets")');
   // Only the sourced-facts block may carry numbers or named sources; and only
   // when each line in it is a verified fact.
   const factsBlock = (main.match(/<section[^>]+data-search-loop=["']facts["'][\s\S]*?<\/section>/i) || [''])[0];
@@ -163,7 +168,7 @@ export function gateReport(page, ctx) {
   for (const other of [...(ctx.corpus || []), ...(ctx.siblings || [])]) {
     if (other.route === ctx.selfRoute || !other.sh) continue;
     const j = jaccard(sh, other.sh);
-    if (j >= LIMITS.nearDup) { p.push(`near-duplicate of ${other.route} (similarity ${j.toFixed(2)})`); break; }
+    if (j >= Math.min(LIMITS.nearDup, Number(cfg.distinct?.near_dup) || LIMITS.nearDup)) { p.push(`near-duplicate of ${other.route} (similarity ${j.toFixed(2)})`); break; }
   }
   return { problems: p, notes };
 }
