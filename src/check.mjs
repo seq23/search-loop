@@ -82,10 +82,15 @@ export async function check(cfg, { rules: modeRules, mode, now = new Date(), fet
 
   // AI visitors + bot hits, accumulated daily (Cloudflare keeps short windows on free zones).
   const daily = L.read('ai_daily', { schema: 'search-loop-ai-daily-v1', days: {} });
-  if (!daily.days[today]) {
+  // A day not fully read is read again on the next run (v1.5.1), so a fixed credential shows numbers the same day.
+  const partial = (d) => !d || d.not_read || d.ai_visitors_not_read || d.ai_bot_hits_not_read;
+  if (partial(daily.days[today])) {
     if (cfg.analytics?.ai_referrals === 'cloudflare' || cfg.analytics?.ai_bot_hits === 'cloudflare') {
       const r = await cloudflareDay({ zoneName: cfg.analytics.zone || new URL(cfg.base_url).host, fetchImpl, now });
-      daily.days[today] = r.notRead ? { not_read: r.notRead } : { ai_visitors: r.ai_visitors, ai_bot_hits: r.ai_bot_hits };
+      daily.days[today] = r.notRead ? { not_read: r.notRead } : {
+        ...(r.ai_visitors ? { ai_visitors: r.ai_visitors } : { ai_visitors_not_read: r.visitorsNotRead }),
+        ...(r.ai_bot_hits ? { ai_bot_hits: r.ai_bot_hits } : { ai_bot_hits_not_read: r.botsNotRead }),
+      };
     } else daily.days[today] = { not_read: 'no free analytics source configured for this site (analytics.ai_referrals)' };
     const keep = Object.keys(daily.days).sort().slice(-120);
     daily.days = Object.fromEntries(keep.map((k) => [k, daily.days[k]]));
@@ -137,7 +142,7 @@ export async function check(cfg, { rules: modeRules, mode, now = new Date(), fet
     const m = g.map?.get(p.url);
     const snap = g.notRead ? { source: 'not read', note: g.notRead } : { source: 'search_console', clicks: m?.clicks || 0, impressions: m?.impressions || 0, position: m?.position ?? null };
     const day = daily.days[today];
-    snap.ai_visits_today = day?.ai_visitors?.by_path?.[p.route] ?? (day?.not_read ? `not read: ${day.not_read}` : 0);
+    snap.ai_visits_today = day?.ai_visitors?.by_path?.[p.route] ?? ((day?.ai_visitors_not_read || day?.not_read) ? `not read: ${day.ai_visitors_not_read || day.not_read}` : 0);
     snap.indexed = p.indexed ?? null;
     for (const k of due.length ? due : ['settle']) {
       snap.checkpoint = k;

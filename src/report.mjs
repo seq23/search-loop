@@ -16,7 +16,7 @@ export function sumDaily(daily, key, today) {
   let total = 0; let read = 0; const why = new Set();
   for (const [d, v] of Object.entries(daily?.days || {})) {
     if (!within7(d, today)) continue;
-    if (v[key] && typeof v[key].total === 'number') { total += v[key].total; read++; } else if (v.not_read) why.add(v.not_read);
+    if (v[key] && typeof v[key].total === 'number') { total += v[key].total; read++; } else if (v[`${key}_not_read`] || v.not_read) why.add(v[`${key}_not_read`] || v.not_read);
   }
   if (!read) return `not read: ${[...why][0] || 'no day this week was collected'}`;
   return total;
