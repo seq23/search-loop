@@ -53,6 +53,10 @@ export function checkConfig(c) {
   need(HEALTH_GATES.includes(c.health_gate ?? 'none'), `health_gate must be ${HEALTH_GATES.join(' | ')}`);
   need(typeof (c.menu_pages_need_approval ?? false) === 'boolean', 'menu_pages_need_approval must be true or false');
   need(Array.isArray(c.protected_paths ?? []), 'protected_paths must be a list');
+  need(c.author === undefined || (c.author && typeof c.author.name === 'string' && c.author.name.trim()), 'author: { name, url? } (a real person shown as the byline)');
+  need(c.distinct?.near_dup === undefined || (typeof c.distinct.near_dup === 'number' && c.distinct.near_dup > 0 && c.distinct.near_dup <= 0.35), 'distinct.near_dup: above 0, at most 0.35 (stricter than the default only)');
+  need(c.local?.substance === undefined || typeof c.local.substance === 'string', 'local.substance: what every local page must carry');
+  need(c.reserved_titles === undefined || typeof c.reserved_titles === 'string', 'reserved_titles: a path to a JSON list of [{ route, title }]');
   need(typeof (c.published_pages_frozen ?? false) === 'boolean', 'published_pages_frozen must be true or false');
   const ap = c.approval || {};
   need(typeof (ap.new_pages ?? false) === 'boolean', 'approval.new_pages must be true or false');

@@ -48,6 +48,16 @@ Every site shares the same free capacity, so the engine spreads the load over th
 - When every lane is out: the run drops to `slow` for the day (`NAMED NOTE [FREE_MODEL_RATE_LIMITED]`), the search stays queued for the next run (never dropped), and the report names each closed lane. If BUILD then published nothing, the run writes **`NAMED NOTE [NO_FREE_MODEL]`** (job summary and the weekly report's notes; exit 0, because the next run retries the queued searches — never a red run) and counts the streak in `runs.json` (`no_free_model`); the note names it ("run N in a row since …"). Any run whose lanes answer ends the streak. Only a site with no model credential at all and nothing else done exits red (`NAMED STOP [FREE_MODEL_KEY]`, exit 3): retrying cannot fix a missing key.
 - **Stagger:** a scheduled run waits a fixed, site-specific 0–39 minutes (hash of `site`) before starting, so sites do not hit the shared lanes together; also give each caller its own cron minute. `llm.stagger: false` turns it off; dispatched runs never wait.
 
+## Calendar slots, bylines and local pages (v1.3.1)
+
+For a site that already has an approved editorial calendar (Hicks, 3 Nov 2026), the engine's writer drafts the material for one slot and hands it back; it never publishes and never touches the ledger:
+
+- `search-loop draft-slot --slot slot.json --out draft.json`, or `draftSlot(cfg, slot, { check })` from `src/slot.mjs`. `slot` = `{ title, question?, kind, words: [min, max], avoid: { headings, phrases, sources }, related }`. The approved title is kept; the draft is answer-first, question headings, a 4-question FAQ, 3-4 fetched-and-verified sources, never first person. `check(draft)` adds the site's own blocking checks (e.g. text shared with live pages); its problems go back to the model on the next pass. Stops: `SLOT_DRAFT_REJECTED`, `NO_FREE_MODEL`, `FREE_MODEL_KEY_MISSING`.
+- `reserved_titles` (config): a JSON list of `[{ route, title }]` the site has scheduled. They count as existing pages in the distinct-intent gate, so the loop never writes a question page on a search a calendar post will answer.
+- `author: { name, url }` (config): question pages show the person as the visible byline, with Person schema.
+- `local.substance` (config): what every page naming one of `local.city` / `local.neighbourhoods` must carry (communities served, landmarks, local resources with sources), so a local page is never a city-name swap.
+- `distinct.near_dup` (config, at most 0.35): a stricter near-duplicate threshold between pages.
+
 ## Distinct pages and the per-site cap (v1.3.0)
 
 Her ruling, 3 Nov 2026: the search loop publishes only distinct pages, under a per-site cap that grows with results. Five sites lost most of their Google exposure under thousands of near-identical template pages and recovered only after cutting to a few dozen to a few hundred distinct pages. This replaces the old fixed pace (10/day, +5/week, cap 30).
@@ -74,6 +84,8 @@ The week report says: `published`, `held_by_cap`, `redirected` (with the existin
 | `output.dir`, `output.format`, `output.url_prefix` | yes | where pages go: `dir-index` (`x/index.html`) or `html-file` (`x.html`) |
 | `output.redirects` | no | where merges write their 301: `{file:"_redirects", format:"lines"}` (default) or a JSON list (`format:"json-list"`, `list_key`, `source_field`, `source_form: rel\|route`, `target_field`, `extra`, `count_key`) |
 | `mode` | no | `normal` (default), `slow`, `off` — can only lower the global switch |
+| `author` | no | `{ name, url }`: the visible byline and Person schema on question pages (v1.3.1) |
+| `reserved_titles` | no | path to `[{ route, title }]` the site has scheduled; same-intent searches are skipped (v1.3.1) |
 | `cap` | no | `max_live_pages` (null = start from the site's distinct live engine pages, at least `start_pages` 20), `grow_share` 0.1, `min_pages` 10, `max_per_day` 10 (≤ 30). The old `pace` key is retired and ignored |
 | `distinct` | no | same-intent thresholds: `jaccard` 0.6, `containment_min_words` 3, `same_answer` 0.5; `sitemap_files` (default every `sitemap*.xml` at the root) |
 | `published_pages_frozen` | no | `true` = never modify, redirect, merge, unpublish or undo a published page (always on for Horse and Hicks) |

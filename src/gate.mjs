@@ -163,7 +163,7 @@ export function gateReport(page, ctx) {
   for (const other of [...(ctx.corpus || []), ...(ctx.siblings || [])]) {
     if (other.route === ctx.selfRoute || !other.sh) continue;
     const j = jaccard(sh, other.sh);
-    if (j >= LIMITS.nearDup) { p.push(`near-duplicate of ${other.route} (similarity ${j.toFixed(2)})`); break; }
+    if (j >= Math.min(LIMITS.nearDup, Number(cfg.distinct?.near_dup) || LIMITS.nearDup)) { p.push(`near-duplicate of ${other.route} (similarity ${j.toFixed(2)})`); break; }
   }
   return { problems: p, notes };
 }

@@ -40,11 +40,15 @@ export function pickRelated(cfg, index, query, { exclude = new Set(), n = 3, edi
 
 export function draftPrompt(cfg, target, related, problems) {
   const facts = cfg.health?.real_facts ? `\nReal facts on record (use only these for services/hours): ${JSON.stringify(cfg.health.real_facts)}` : '';
+  // v1.3.1: a search that names one of the site's places gets real local substance, never a city-name swap.
+  const places = cfg.local ? [cfg.local.city, ...(cfg.local.neighbourhoods || [])].filter(Boolean) : [];
+  const place = places.find((pl) => String(target.query).toLowerCase().includes(String(pl).toLowerCase()));
+  const local = place && cfg.local?.substance ? `\nThis is a local page for ${place}. ${cfg.local.substance}` : '';
   return [
     { role: 'system', content: `You write one web page that answers one search for ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Voice: ${cfg.voice}. You return ONLY a JSON object, no prose around it.` },
     { role: 'user', content: `Search to answer: "${target.query}"
 Existing pages on the site you may mention by title (do not invent others): ${related.map((r) => r.title).join(' | ') || 'none'}
-The page ends by inviting the reader to: ${cfg.action.label}.${facts}
+The page ends by inviting the reader to: ${cfg.action.label}.${facts}${local}
 
 Return JSON with exactly these keys:
 {

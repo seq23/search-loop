@@ -63,6 +63,14 @@ export function sitemapRoutes(cfg) {
 }
 
 // Everything the site already answers. index: buildIndex(); book: pages.json.
+/** `reserved_titles` (config): a JSON file of [{ route, title, question? }] the site has scheduled. */
+export function reservedOf(cfg) {
+  if (!cfg.reserved_titles) return [];
+  const f = path.resolve(cfg.root || '.', cfg.reserved_titles);
+  if (!fs.existsSync(f)) return [];
+  try { const j = JSON.parse(fs.readFileSync(f, 'utf8')); return (Array.isArray(j) ? j : j.items || []).filter((x) => x && x.route && x.title); } catch { return []; }
+}
+
 export function corpusFor(cfg, index, book) {
   const sw = siteWordsOf(cfg);
   const out = [];
@@ -75,6 +83,9 @@ export function corpusFor(cfg, index, book) {
   };
   for (const p of book?.pages || []) if (p.status === 'live') add(p.route, [p.query], 'engine', { slug: p.slug });
   for (const p of index || []) add(p.route, [p.title, p.h1], 'page', { protected: p.protected });
+  // v1.3.1: pages a site has already scheduled but not yet published (an editorial calendar) count as
+  // existing, so the loop never writes a question page on a search a calendar post will answer.
+  for (const r of reservedOf(cfg)) if (!seen.has(r.route)) add(r.route, [r.title, r.question], 'reserved');
   for (const r of sitemapRoutes(cfg)) if (!seen.has(r) && !seen.has(r.replace(/\/$/, '')) && !seen.has(r + '/')) add(r, [slugWords(r)], 'sitemap');
   return out;
 }
