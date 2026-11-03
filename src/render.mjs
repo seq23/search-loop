@@ -29,11 +29,28 @@ export function fitTitle(cfg, draft) {
 }
 
 // A meta description over the limit is cut at a word boundary (never padded).
+// Words a shortened description must never end on ("... for your.").
+export const DANGLING = new Set('a an the and or but nor so yet for of to in on at by with from into onto upon about as than that which who whom whose what when where while if because your you my our their his her its this these those is are was were be been being has have had do does did can could will would should may might must not no very more most less just also each every any some such how why'.split(' '));
+
+// Over the limit: cut at a sentence end, else a clause boundary, else a word
+// boundary with no trailing function word, always within [min, max].
 export function fitMeta(m) {
   const s = String(m || '').trim();
-  if (s.length <= LIMITS.meta[1]) return s;
-  const cut = s.slice(0, LIMITS.meta[1] - 1).replace(/\s+\S*$/, '').replace(/[,;:\s]+$/, '');
-  return cut.length >= LIMITS.meta[0] ? cut + '.' : s;
+  const [min, max] = LIMITS.meta;
+  if (s.length <= max) return s;
+  const win = s.slice(0, max);
+  const ok = (t) => t.length >= min && t.length <= max;
+  const sentence = [...win.matchAll(/[.!?](?=\s|$)/g)].map((x) => win.slice(0, x.index + 1)).reverse().find(ok);
+  if (sentence) return sentence;
+  const tidy = (t) => {
+    const words = t.replace(/[,;:\-\u2013\u2014\s]+$/, '').split(/\s+/);
+    while (words.length && DANGLING.has(words[words.length - 1].toLowerCase().replace(/[^a-z']/g, ''))) words.pop();
+    return words.join(' ').replace(/[,;:\-\u2013\u2014\s]+$/, '');
+  };
+  const clause = [...win.matchAll(/\s*[,;:\u2013\u2014](?=\s)/g)].map((x) => tidy(win.slice(0, x.index)) + '.').reverse().find(ok);
+  if (clause) return clause;
+  const word = tidy(s.slice(0, max - 1).replace(/\s+\S*$/, '')) + '.';
+  return ok(word) ? word : s;
 }
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];

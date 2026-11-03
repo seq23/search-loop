@@ -441,6 +441,11 @@ test('meta descriptions over 160 characters are cut at a word boundary, never pa
   const m = fitMeta(long);
   assert.ok(m.length >= 120 && m.length <= 160, String(m.length));
   assert.equal(fitMeta('short one'), 'short one');
+  // never ends on a dangling function word ("... for your.") — Hicks' validator blocks those
+  const dangling = 'Hicks Consulting helps small nonprofits write grant budgets that funders trust and approve quickly with a clear process built for your team and the board that reviews every line';
+  const d = fitMeta(dangling);
+  assert.ok(d.length >= 120 && d.length <= 160, String(d.length));
+  assert.doesNotMatch(d, /\b(for|your|the|a|an|of|to|and|or|with|that|in|on)\.$/i, d);
 });
 
 test('a model that never answers leaves the search queued (not dropped); BUILD with no targets runs FIND first', async () => {
