@@ -569,8 +569,11 @@ test('a free model that never answers cannot hang the run: request timeout, call
     assert.ok(Object.keys(laneState.slow).length >= 1, 'a model that timed out is marked slow');
     assert.match(r.reason, /timed out/);
     // The slow models are skipped for the rest of the run: the next call does not re-wait on them.
+    const slowBefore = Object.keys(laneState.slow).map((k) => k.split(':').slice(1).join(':'));
+    const askedBefore = asked.length;
     r = await freeChat({ cfg, messages: msgs, apiKey: 'k', fetchImpl: hang, sleepImpl: async () => {}, timeoutMs: 100, callMs: 250 });
-    assert.equal(new Set(asked).size, asked.length, `no model asked twice in one run: ${asked.join(', ')}`);
+    const again = asked.slice(askedBefore).filter((m) => slowBefore.includes(m));
+    assert.deepEqual(again, [], `a model that used its full timeout is not asked again in the run: ${again.join(', ')}`);
     // Past the run's soft budget no model call starts at all.
     resetLanes(); runClock.softAt = Date.now() - 1;
     const n = calls;
@@ -618,4 +621,73 @@ test('approval mode config is checked', async () => {
   assert.ok(checkConfig({ ...base, approval: { new_pages: 'yes' } }).some((m) => /approval.new_pages/.test(m)));
   assert.ok(checkConfig({ ...base, approval: { new_pages: true, pending_dir: '../x' } }).some((m) => /approval.pending_dir/.test(m)));
   assert.deepEqual(checkConfig({ ...base, approval: { new_pages: true } }), checkConfig(base));
+});
+
+// 6 Nov sweep: p-n-p and WPP-llm went red every day with NOTHING_DONE because the
+// gate had dropped their whole queue: WPP-llm's UTM action URL read back as &amp;
+// (27 of 30 drops), p-n-p's own footer Maps/Facebook links failed "allowed link
+// target" (19 of 24). Both are the gate's fault: a site's chrome and an escaped
+// href never drop a draft, and a search dropped under an older gate is retried.
+test('gate: a UTM action URL and the site footer chrome never drop a draft; old-gate drops are retried', async () => {
+  const action = 'https://example.com/download?utm_source=search-loop&utm_medium=question';
+  const footer = '<footer><a href="https://www.google.com/maps?cid=123">Find us on Maps</a> <a href="https://www.facebook.com/example">Facebook page</a></footer>';
+  const root = site({ cfg: { action: { label: 'Get the Example Planner', url: action }, template: { og_image: { url: 'https://example.com/og.png', width: 1200, height: 630 }, footer_html: footer } } });
+  // Every search FIND would queue was dropped on 2 Nov by the old gate (no gate version).
+  const first = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch({ gscRows: [{ keys: ['how to plan my week as a founder', 'https://example.com/weekly-planning/'], clicks: 0, impressions: 40, position: 12 }] }), chat: goodChat(), stage: 'find' });
+  const queued = JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/targets.json'))).targets.filter((t) => t.kind === 'new');
+  assert.ok(queued.length > 0 && first.did.find);
+  const bookFile = path.join(root, 'data/search-loop/pages.json');
+  fs.writeFileSync(bookFile, JSON.stringify({ schema: 'search-loop-pages-v1', pages: [], dropped: queued.map((t) => ({ query: t.query, at: '2026-11-02', reason: [`action: the page must end in the site's one action (${action})`] })), redirected: [] }));
+  const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: goodChat(), stage: 'build' });
+  assert.ok(r.did.build.published > 0, `published: ${r.report.notes.join(' | ')}`);
+  const book = JSON.parse(fs.readFileSync(bookFile, 'utf8'));
+  const newDrops = book.dropped.filter((d) => d.at !== '2026-11-02');
+  for (const d of newDrops) for (const why of d.reason) assert.doesNotMatch(String(why), /one action|google\.com\/maps|facebook\.com/, why);
+  const html = fs.readFileSync(path.join(root, book.pages[0].rel), 'utf8');
+  assert.ok(html.includes('google.com/maps'), 'footer chrome is on the page');
+  // A drop made by the current gate waits the full retry window.
+  assert.ok(newDrops.every((d) => d.gate === 2));
+});
+
+// 6 Nov sweep: local-guides runs CHECK only; with 13 live pages and no checkpoint
+// due yet it measured every page in Search Console and was still named NOTHING_DONE.
+test('a CHECK-only run that measured live pages with none due is not NOTHING_DONE', async () => {
+  const root = site();
+  await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: goodChat() });
+  const next = new Date(NOW.getTime() + 86400000);
+  const r = await run({ root, now: next, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: goodChat(), stage: 'check' });
+  assert.ok(r.did.check.measured > 0, 'live pages measured');
+  assert.equal(r.did.check.checked, 0, 'no checkpoint due a day after publishing');
+  assert.equal(r.nothing, false);
+  assert.match(r.census, /measured=\d+/);
+  // Search Console unreadable: nothing was measured, so the run is still named.
+  const bad = async (u, i) => (String(u).includes('/searchAnalytics/query') ? new Response('{}', { status: 403 }) : fakeFetch()(u, i));
+  const r2 = await run({ root, now: new Date(next.getTime() + 86400000), 'global-mode': 'normal', fetchImpl: bad, chat: goodChat(), stage: 'check' });
+  assert.equal(r2.did.check.measured, 0);
+  assert.equal(r2.nothing, true);
+});
+
+test('a model cut short by the call deadline is not skipped for the run; a full timeout still is', { timeout: 10000 }, async () => {
+  // Shape of sprylabs-hpc-site run 41439077206: three OpenRouter models used their full
+  // timeout, Workers AI got the 14 s left in the call, timed out, and was skipped for the
+  // run, so the next page had no lane at all and the run was named NO_FREE_MODEL.
+  const { freeChat, resetLanes, laneState } = await import('../src/llm.mjs');
+  const { startClock } = await import('../src/util.mjs');
+  const cfg = { root: process.cwd() };
+  const msgs = [{ role: 'user', content: 'x' }];
+  const asked = [];
+  const hang = (u, init) => { asked.push(JSON.parse(init.body).model); return new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted')))); };
+  process.env.GEMINI_API_KEY = 'gm';
+  try {
+    resetLanes(); startClock({});
+    const r = await freeChat({ cfg, messages: msgs, apiKey: 'k', fetchImpl: hang, sleepImpl: async () => {}, timeoutMs: 100, callMs: 250 });
+    assert.equal(r.stop, 'NO_FREE_MODEL');
+    const slow = Object.keys(laneState.slow);
+    const askedModels = asked.length;
+    assert.ok(askedModels >= 3, `the case must ask at least three models (${askedModels})`);
+    assert.equal(slow.length, askedModels - 1, `only the models that had the full 100 ms are slow: ${slow.join(', ')} of ${asked.join(', ')}`);
+    const cut = asked[asked.length - 1];
+    assert.ok(!slow.some((k) => k.endsWith(`:${cut}`)), `the model cut short (${cut}) is not skipped for the run`);
+    assert.match(r.reason + JSON.stringify(r.attempts), /cut short by the call budget/);
+  } finally { delete process.env.GEMINI_API_KEY; startClock({}); resetLanes(); }
 });

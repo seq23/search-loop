@@ -8,7 +8,7 @@ import { ledger } from './ledger.mjs';
 import { buildIndex } from './site-index.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
 import { render, pageRel, pageUrl, withRelatedLink, fitMeta } from './render.mjs';
-import { gateReport, LIMITS } from './gate.mjs';
+import { gateReport, LIMITS, GATE_VERSION } from './gate.mjs';
 import { centralDate, slugify, tokenOverlap, shingles, stripTags, sha256, fetchText, daysBetween, pastSoft, progress } from './util.mjs';
 import { intentKey as keyOf } from './find.mjs';
 import { currentCap, liveEnginePages, recordHeld, CAP_DEFAULTS } from './cap.mjs';
@@ -177,7 +177,10 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
   const targets = (L.read('targets', { targets: [] }).targets || []).filter((t) => t.kind === 'new');
   if (!targets.length) { notes.push('NAMED STOP [NO_TARGETS] FIND has produced no new searches to build; the next weekly FIND refills the list'); return result; }
   const taken = new Set(book.pages.map((p) => keyOf(p.query)));
-  const recentlyDropped = new Set([...book.dropped, ...book.redirected].filter((d) => daysBetween(d.at, today) < DROP_RETRY_DAYS).map((d) => keyOf(d.query)));
+  // A gate drop (reason is the gate's problem list) recorded under an older gate is
+  // retried now; path drops and redirects keep the 28-day wait.
+  const staleGateDrop = (d) => Array.isArray(d.reason) && d.gate !== GATE_VERSION && !String(d.reason[0] || '').startsWith('same intent as');
+  const recentlyDropped = new Set([...book.dropped, ...book.redirected].filter((d) => daysBetween(d.at, today) < DROP_RETRY_DAYS && !staleGateDrop(d)).map((d) => keyOf(d.query)));
   const queue = targets.filter((t) => !taken.has(keyOf(t.query)) && !recentlyDropped.has(keyOf(t.query)));
   const index = buildIndex(cfg, { withText: true });
   const corpus = corpusFor(cfg, index, book);
@@ -245,7 +248,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     if (target.__redirect) { const m = target.__redirect; delete target.__redirect; redirectToStrengthen(L, book, target, m, { today, stage: 'draft', frozen }); if (frozen) result.skipped_same_intent = (result.skipped_same_intent || 0) + 1; else result.redirected++; continue; }
     if (!html && !problems) { result.model_failed = (result.model_failed || 0) + 1; continue; } // model never answered: retry next run, not a drop
     if (!html || problems?.length) {
-      book.dropped.push({ query: target.query, at: today, reason: (problems || ['no draft from the free model']).slice(0, 5) });
+      book.dropped.push({ query: target.query, at: today, gate: GATE_VERSION, reason: (problems || ['no draft from the free model']).slice(0, 5) });
       result.dropped++;
       continue;
     }
