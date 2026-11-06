@@ -64,10 +64,15 @@ function turn(lane, model, { deadline, clock, timeoutMs }) {
   if (left <= 0) return null;
   return Math.max(1, Math.min(timeoutMs, left));
 }
-function failed(lane, model, r, attempts) {
-  if (r.timedOut) laneState.slow[`${lane}:${model}`] = r.error;
-  attempts.push({ lane, model, status: r.timedOut ? 'timeout' : 'error' });
-  progress('model', `${lane} ${model}: ${r.error}`);
+// A timeout marks the model slow only when it had the full request timeout. A turn
+// cut short by the call deadline (sprylabs run 41439077206: Workers AI got the 14 s
+// left after three 60 s OpenRouter timeouts) says nothing about the model, so it is
+// not skipped for the run; the next call gives it a full turn.
+function failed(lane, model, r, attempts, { ms, timeoutMs } = {}) {
+  const cut = r.timedOut && ms != null && timeoutMs != null && ms < timeoutMs;
+  if (r.timedOut && !cut) laneState.slow[`${lane}:${model}`] = r.error;
+  attempts.push({ lane, model, status: cut ? 'cut short by the call budget' : r.timedOut ? 'timeout' : 'error' });
+  progress('model', `${lane} ${model}: ${r.error}${cut ? ' (cut short by the call budget; asked again next call)' : ''}`);
 }
 // A 200 whose body is not JSON is not a model answer: the endpoint is dead or replaced.
 function notAnAnswer(lane, model, r, attempts) {
@@ -88,7 +93,7 @@ async function geminiLane({ route, messages, maxTokens, fetchImpl, timeoutMs, at
   for (const model of route.gemini) {
     const ms = turn('gemini', model, { deadline, clock, timeoutMs }); if (ms == null) continue;
     const r = await post(fetchImpl, 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', { authorization: `Bearer ${key}` }, { model, messages, max_tokens: Math.min(maxTokens, 8000), temperature: 0.4, reasoning_effort: route.geminiEffort?.[model] || 'none' }, ms);
-    if (r.error) { failed('gemini', model, r, attempts); continue; }
+    if (r.error) { failed('gemini', model, r, attempts, { ms, timeoutMs }); continue; }
     if (notAnAnswer('gemini', model, r, attempts)) return { next: true };
     const { res, payload } = r;
     const body = JSON.stringify(payload?.error || payload?.[0]?.error || '');
@@ -115,7 +120,7 @@ async function openrouterLane({ route, messages, maxTokens, fetchImpl, timeoutMs
   for (const model of route.models) {
     const ms = turn('openrouter', model, { deadline, clock, timeoutMs }); if (ms == null) continue;
     const r = await post(fetchImpl, route.endpoint, { authorization: `Bearer ${apiKey}` }, { model, messages, temperature: 0.4, max_tokens: maxTokens + 2048, reasoning: { enabled: false }, usage: { include: true }, provider: { allow_fallbacks: false } }, ms);
-    if (r.error) { failed('openrouter', model, r, attempts); continue; }
+    if (r.error) { failed('openrouter', model, r, attempts, { ms, timeoutMs }); continue; }
     if (notAnAnswer('openrouter', model, r, attempts)) return { next: true };
     const { res, payload } = r;
     if (res.status === 401 || res.status === 402 || res.status === 403) { laneState.closed.openrouter = `OpenRouter refused the key (HTTP ${res.status})`; attempts.push({ lane: 'openrouter', model, status: `http_${res.status}` }); return { next: true, keyRefused: true }; }
@@ -173,7 +178,7 @@ async function workersLane({ route, messages, maxTokens, fetchImpl, timeoutMs, a
   const ms = turn('workers', w.model, { deadline, clock, timeoutMs }); if (ms == null) return {};
   const r = await post(fetchImpl, `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/${w.model}`, { authorization: `Bearer ${runToken}` }, { messages, max_tokens: tokens, temperature: 0.4, ...(w.extra_body || {}) }, ms);
   laneState.workersNeurons = mine + worst;
-  if (r.error) { failed('workers', w.model, r, attempts); return {}; }
+  if (r.error) { failed('workers', w.model, r, attempts, { ms, timeoutMs }); return {}; }
   if (notAnAnswer('workers', w.model, r, attempts)) return { next: true };
   // Older models answer { result: { response } }; newer ones answer OpenAI-shaped { result: { choices } }.
   const answer = r.payload?.result?.response || r.payload?.result?.choices?.[0]?.message?.content || '';

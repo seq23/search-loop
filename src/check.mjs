@@ -114,6 +114,10 @@ export async function check(cfg, { rules: modeRules, mode, now = new Date(), fet
   progress('check', `Search Console rows for ${live.length} live page(s)`);
   const g = live.length ? await gscPages(cfg, now, fetchImpl) : { map: new Map() };
   if (g.notRead) notes.push(`not read: Search Console page data (${g.notRead})`);
+  // Pages measured against Search Console this run, checkpoint due or not. A CHECK
+  // run that read every live page and found none due did its job (local-guides:
+  // 13 live pages, first checkpoints at 2 weeks); it is not NOTHING_DONE.
+  res.measured = g.notRead ? 0 : live.length;
 
   // Index status (pages 14-42 days old) for the report, URL Inspection, free.
   let measured = 0; let indexed = 0; let inspectFail = null;

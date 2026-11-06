@@ -74,6 +74,10 @@ export function stripTags(html) {
 }
 
 export const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// The inverse of esc for an attribute value read back out of rendered HTML:
+// render writes href="${esc(url)}", so a URL with a query string (&) reads back
+// as &amp; and never equals the config/fact URL it came from unless decoded.
+export const unescAttr = (s) => String(s ?? '').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 
 // 5-word shingles; Jaccard similarity for the near-duplicate check.
 export function shingles(text, k = 5) {

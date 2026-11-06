@@ -13,7 +13,14 @@
 //   than 25%, and wording/style rules (search-first title, site name once,
 //   "X is ..." answer, weak anchors, filler phrases). render.mjs fits the title
 //   and meta first, so most of these never fire.
-import { stripTags, wordCount, shingles, jaccard, tokenOverlap } from './util.mjs';
+import { stripTags, unescAttr, wordCount, shingles, jaccard, tokenOverlap } from './util.mjs';
+
+// Bumped whenever a gate change would let through a draft the old gate dropped
+// for a reason that was the gate's own fault (v1.6.2: hrefs read decoded, links
+// checked on <main> only). A gate drop recorded under another version is retried
+// at once instead of waiting DROP_RETRY_DAYS, so a site whose whole queue was
+// dropped by a gate bug builds again on the next run.
+export const GATE_VERSION = 2;
 
 export const LIMITS = { title: [30, 65], meta: [120, 160], answer: [40, 60], faq: [3, 6], faqAnswer: [40, 60], minWords: 600, nearDup: 0.35 };
 
@@ -109,9 +116,14 @@ export function gateReport(page, ctx) {
   for (const t of ['og:title', 'og:description', 'og:type', 'og:url', 'og:site_name', 'og:image', 'og:image:width', 'og:image:height']) {
     if (!new RegExp(`property=["']${t}["']`).test(html)) p.push(`b6 missing ${t}`);
   }
-  // B8 anchors + alt
-  for (const m of html.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
-    const href = m[1]; const anchor = stripTags(m[2]);
+  // B8 anchors + alt. Links are checked on what the page wrote (<main>): the site's
+  // own header and footer (template.header_html/footer_html: its Maps listing,
+  // socials) are site chrome from the config, not model links, and never fail a
+  // draft (p-n-p: 19 of 24 drops on 2-3 Nov named its footer's Maps or Facebook
+  // links). Hrefs are read decoded: render writes href="${esc(url)}", so a UTM
+  // action URL reads back as &amp; (WPP-llm: 27 of 30 drops).
+  for (const m of main.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    const href = unescAttr(m[1]); const anchor = stripTags(m[2]);
     if (WEAK_ANCHOR.test(anchor)) notes.push(`b8 weak anchor text "${anchor}"`);
     if (/^(mailto:|tel:|#)/.test(href)) continue;
     const abs = href.startsWith('/') ? cfg.base_url + href : href;
@@ -129,7 +141,7 @@ export function gateReport(page, ctx) {
   else if (!text.includes(String(art.datePublished).slice(0, 10)) && !html.includes(`datetime="${String(art.datePublished).slice(0, 10)}`)) p.push('d4 published date is not visible on the page');
   // The site's one action, at the end.
   const actionAbs = cfg.action.url.startsWith('/') ? cfg.action.url : cfg.action.url.replace(cfg.base_url, '');
-  const lastLink = [...main.matchAll(/<a\s[^>]*href=["']([^"']+)["']/gi)].pop()?.[1] || '';
+  const lastLink = unescAttr([...main.matchAll(/<a\s[^>]*href=["']([^"']+)["']/gi)].pop()?.[1] || '');
   if (!(lastLink === cfg.action.url || lastLink === actionAbs || lastLink === cfg.base_url + actionAbs)) p.push(`action: the page must end in the site's one action (${cfg.action.url})`);
   // Sourced facts; nothing invented.
   // Page shape (v1.5.0): at least 2 distinct sources that answered 200, and at least one list or
