@@ -691,3 +691,40 @@ test('a model cut short by the call deadline is not skipped for the run; a full 
     assert.match(r.reason + JSON.stringify(r.attempts), /cut short by the call budget/);
   } finally { delete process.env.GEMINI_API_KEY; startClock({}); resetLanes(); }
 });
+
+test('v1.7.1 page shape: a stock sentence is used at most three times; a how-to gives numbered steps', async () => {
+  const { cleanDraft } = await import('../src/build.mjs');
+  const { render } = await import('../src/render.mjs');
+  const { fixtureConfig } = await import('../src/fixture.mjs');
+  const repeatedSlots = (t) => { const w = t.toLowerCase().match(/[a-z0-9][\w'’-]*/g) || [], m = new Map(); for (let i = 0; i + 8 <= w.length; i++) { const k = w.slice(i, i + 8).join(' '); m.set(k, (m.get(k) || 0) + 1); } return [...m].filter(([, c]) => c > 3); };
+  const stock = 'You give us the date and the place, and we bring everything and set it up.';
+  const raw = {
+    h1: 'How to Book a Birthday Party', title_lead: 'How to Book a Birthday Party', meta_description: 'm', direct_answer: `Booking is easy. ${stock}`,
+    sections: [
+      { heading: 'Where do you start?', paragraphs: [`Pick a weekend. ${stock}`, stock], bullets: ['Pick the date', 'Send the address'] },
+      { heading: 'What happens next?', paragraphs: [`We confirm by text. ${stock} Then we arrive early.`, stock] },
+    ],
+    faq: [{ q: 'Do I set up?', a: `No. ${stock}` }, { q: 'Anything else?', a: `Yes. Bring candles. ${stock}` }],
+    facts: [],
+  };
+  const visible = (d) => [d.direct_answer, ...d.sections.flatMap((s) => [...s.paragraphs, ...(s.bullets || [])]), ...d.faq.map((f) => f.a)].join(' ');
+  assert.ok(repeatedSlots(visible(raw)).length > 0, 'the raw draft is template filler by the Monday sample\'s measure');
+  const d = cleanDraft(raw);
+  assert.deepEqual(repeatedSlots(visible(d)), [], 'no 8-word phrase is left more than three times');
+  assert.equal(d.direct_answer, `Booking is easy. ${stock}`, 'the first uses are kept');
+  assert.deepEqual(d.sections[0].paragraphs, [`Pick a weekend. ${stock}`, stock]);
+  assert.deepEqual(d.sections[1].paragraphs, ['We confirm by text. Then we arrive early.'], 'a fourth use is dropped, and a paragraph that was only the repeat goes');
+  assert.equal(d.faq[0].a, 'No.');
+  assert.equal(d.faq[1].a, 'Yes. Bring candles.');
+  // Negative: a draft with no repeats is returned unchanged.
+  const fx = (await import('../src/fixture.mjs')).fixtureDraft();
+  const same = cleanDraft(fx);
+  assert.deepEqual(same.sections.map((s) => s.paragraphs), fx.sections.map((s) => s.paragraphs));
+  assert.deepEqual(same.faq.map((f) => f.a), fx.faq.map((f) => f.a));
+  const cfg = fixtureConfig();
+  const htmlHow = render(cfg, { slug: 'how-to-book', draft: d, published: '2026-11-07' });
+  assert.match(htmlHow, /<ol><li>Pick the date<\/li>/);
+  assert.doesNotMatch(htmlHow, /<ul><li>Pick the date/);
+  const htmlWhat = render(cfg, { slug: 'what-is', draft: { ...d, h1: 'What a party planner does', title_lead: 'What a party planner does' }, published: '2026-11-07' });
+  assert.match(htmlWhat, /<ul><li>Pick the date<\/li>/);
+});

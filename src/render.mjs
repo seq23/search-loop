@@ -88,13 +88,16 @@ export function render(cfg, { slug, draft, related = [], published, modified }) 
       { '@type': 'ListItem', position: 3, name: draft.h1, item: url },
     ] },
   ];
+  // v1.7.1: a how-to page gives its steps as a numbered list (page shape d2: "a how-to without
+  // numbered steps" failed p-n-p's /questions/how-to-book-birthday-party on 7 Nov 2026).
+  const list = /\bhow to\b/i.test(`${title} ${draft.h1}`) ? 'ol' : 'ul';
   const styles = (t.stylesheets || []).map((h) => `<link href="${esc(h)}" rel="stylesheet"/>`).join('');
   const body = [
     `<nav aria-label="Breadcrumb" class="breadcrumb"><a href="/">${esc(cfg.site_name)}</a> › <span>${esc(draft.h1)}</span></nav>`,
     `<h1>${esc(draft.h1)}</h1>`,
     `<p class="direct-answer">${esc(draft.direct_answer)}</p>`,
     `<p class="page-dates">Published <time datetime="${published}">${humanDate(published)}</time>${modified && modified !== published ? ` · Updated <time datetime="${modified}">${humanDate(modified)}</time>` : ''} · ${cfg.author?.name ? `By ${cfg.author.url ? `<a href="${esc(cfg.author.url)}">${esc(cfg.author.name)}</a>` : esc(cfg.author.name)}` : esc(cfg.publisher?.name || cfg.site_name)}</p>`,
-    ...draft.sections.map((s) => `<section><h2>${esc(s.heading)}</h2>${s.paragraphs.map((x) => `<p>${esc(x)}</p>`).join('')}${(s.bullets || []).length ? `<ul>${s.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}</section>`),
+    ...draft.sections.map((s) => `<section><h2>${esc(s.heading)}</h2>${s.paragraphs.map((x) => `<p>${esc(x)}</p>`).join('')}${(s.bullets || []).length ? `<${list}>${s.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</${list}>` : ''}</section>`),
     facts.length ? `<section data-search-loop="facts"><h2>What the sources say</h2><ul>${facts.map((f) => `<li>${esc(f.claim)} (<a href="${esc(f.source_url)}" rel="noopener">${esc(f.source_name || new URL(f.source_url).hostname)}</a>)</li>`).join('')}</ul></section>` : '',
     `<section class="faq"><h2>Frequently asked questions</h2>${draft.faq.map((f) => `<h3>${esc(f.q)}</h3><p>${esc(f.a)}</p>`).join('')}</section>`,
     related.length ? `<section data-search-loop="related"><h2>Related questions</h2><ul>${related.map((r) => `<li><a href="${esc(r.route)}">${esc(r.anchor)}</a></li>`).join('')}</ul></section>` : '',

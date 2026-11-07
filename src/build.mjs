@@ -78,7 +78,33 @@ export function cleanDraft(d) {
     faq: (Array.isArray(d.faq) ? d.faq : []).map((f) => ({ q: str(f?.q), a: str(f?.a) })).filter((f) => f.q && f.a).slice(0, 6),
     facts: (Array.isArray(d.facts) ? d.facts : []).map((f) => ({ claim: str(f?.claim), source_url: str(f?.source_url), source_name: str(f?.source_name) })).filter((f) => f.claim && /^https:\/\//.test(f.source_url)).slice(0, 4),
   };
-  return out.h1 && out.direct_answer && out.sections.length && out.faq.length ? out : null;
+  if (!(out.h1 && out.direct_answer && out.sections.length && out.faq.length)) return null;
+  return capRepeats(out);
+}
+
+// v1.7.1: a stock sentence the model repeats ("you give us the date and the place, and we bring
+// everything") is template filler: the Monday page-quality sample fails any page whose body repeats
+// an 8-word phrase more than 3 times (p-n-p, 7 Nov 2026: 5 of 5 question pages). The first three uses
+// stay (the sample's own line, boss-os QUALITY.SLOT_MAX); every later sentence that would use an 8-word
+// phrase a fourth time is dropped. A paragraph, bullet or FAQ answer is never emptied by this.
+export const REPEAT_WORDS = 8;
+export const REPEAT_MAX = 3;
+const wordsOf = (t) => String(t).toLowerCase().match(/[a-z0-9][\w'’-]*/g) || [];
+const phrases = (t, n = REPEAT_WORDS) => { const w = wordsOf(t), out = []; for (let i = 0; i + n <= w.length; i++) out.push(w.slice(i, i + n).join(' ')); return out; };
+export function capRepeats(d) {
+  const seen = new Map();
+  const keep = (text) => {
+    const sentences = String(text).split(/(?<=[.!?])\s+/).filter(Boolean);
+    const kept = sentences.filter((s) => { const ph = phrases(s); if (ph.some((x) => (seen.get(x) || 0) >= REPEAT_MAX)) return false; ph.forEach((x) => seen.set(x, (seen.get(x) || 0) + 1)); return true; });
+    return kept.length ? kept.join(' ') : '';
+  };
+  const direct_answer = keep(d.direct_answer) || d.direct_answer;
+  const sections = (d.sections || []).map((s) => {
+    const paragraphs = (s.paragraphs || []).map(keep).filter(Boolean);
+    return { ...s, paragraphs: paragraphs.length ? paragraphs : (s.paragraphs || []).slice(0, 1), bullets: (s.bullets || []).map((b) => keep(b) || b) };
+  });
+  const faq = (d.faq || []).map((f) => ({ ...f, a: keep(f.a) || f.a }));
+  return { ...d, direct_answer, sections, faq };
 }
 
 export async function verifyFacts(facts, fetchImpl = fetch) {
