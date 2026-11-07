@@ -727,6 +727,7 @@ test('v1.7.1 page shape: a stock sentence is used at most three times; a how-to 
   assert.doesNotMatch(htmlHow, /<ul><li>Pick the date/);
   const htmlWhat = render(cfg, { slug: 'what-is', draft: { ...d, h1: 'What a party planner does', title_lead: 'What a party planner does' }, published: '2026-11-07' });
   assert.match(htmlWhat, /<ul><li>Pick the date<\/li>/);
+});
 test('publisher logo and sameAs reach the Organization nodes only when the config gives them', async () => {
   const { render, publisherNode } = await import('../src/render.mjs');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sl-pub-'));
