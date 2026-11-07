@@ -67,6 +67,15 @@ export function pageRel(cfg, slug) {
 export const RELATED_START = '<!-- search-loop:related -->';
 export const RELATED_END = '<!-- /search-loop:related -->';
 
+// The page's Organization: name and url always; logo and sameAs when the site's
+// config gives them (Search Readiness c1 reads the first Organization node and
+// wants name, url, logo and sameAs). Never invented: absent in config, absent here.
+export function publisherNode(cfg) {
+  const p = cfg.publisher || {};
+  const sameAs = (Array.isArray(p.sameAs) ? p.sameAs : []).filter((u) => typeof u === 'string' && u);
+  return { '@type': 'Organization', name: p.name || cfg.site_name, url: p.url || cfg.base_url, ...(p.logo ? { logo: p.logo } : {}), ...(sameAs.length ? { sameAs } : {}) };
+}
+
 // draft: { h1, title_lead, meta_description, direct_answer, sections[{heading, paragraphs[], bullets?[]}], faq[{q,a}], facts[{claim, source_url, source_name, verified}] }
 export function render(cfg, { slug, draft, related = [], published, modified }) {
   const url = pageUrl(cfg, slug);
@@ -78,8 +87,8 @@ export function render(cfg, { slug, draft, related = [], published, modified }) 
   const actionHref = cfg.action.url;
   const graph = [
     { '@type': 'Article', '@id': `${url}#article`, headline: draft.h1, description: draft.meta_description, url, mainEntityOfPage: url, datePublished: published, dateModified: modified || published, inLanguage: 'en',
-      author: cfg.author?.name ? { '@type': 'Person', name: cfg.author.name, ...(cfg.author.url ? { url: cfg.author.url } : {}) } : { '@type': 'Organization', name: cfg.publisher?.name || cfg.site_name, url: cfg.publisher?.url || cfg.base_url },
-      publisher: { '@type': 'Organization', name: cfg.publisher?.name || cfg.site_name, url: cfg.publisher?.url || cfg.base_url },
+      author: cfg.author?.name ? { '@type': 'Person', name: cfg.author.name, ...(cfg.author.url ? { url: cfg.author.url } : {}) } : publisherNode(cfg),
+      publisher: publisherNode(cfg),
       ...(facts.length ? { citation: facts.map((f) => f.source_url) } : {}) },
     { '@type': 'FAQPage', '@id': `${url}#faq`, mainEntity: draft.faq.map((f) => ({ '@type': 'Question', name: f.q, acceptedAnswer: { '@type': 'Answer', text: f.a } })) },
     { '@type': 'BreadcrumbList', itemListElement: [

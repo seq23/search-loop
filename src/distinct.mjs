@@ -27,7 +27,10 @@ import { INTENT_VERBS, stem } from './find.mjs';
 import { DISTINCT_DEFAULTS } from './defaults.mjs';
 export { DISTINCT_DEFAULTS };
 
-export function siteWordsOf(cfg) { return new Set(contentWords(cfg.site_name || '')); }
+// The brand words left out of intent comparisons: the site name's, or the
+// optional site_words string when the full name holds topic words ("Dianne's
+// Place Recovery Services" would otherwise drop "recovery" from every query).
+export function siteWordsOf(cfg) { return new Set(contentWords(cfg.site_words || cfg.site_name || '')); }
 
 // Intent words: content words minus intent verbs and the site's own name, stemmed.
 export function intentWords(text, siteWords = new Set()) {

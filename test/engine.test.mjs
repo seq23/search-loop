@@ -728,3 +728,31 @@ test('v1.7.1 page shape: a stock sentence is used at most three times; a how-to 
   const htmlWhat = render(cfg, { slug: 'what-is', draft: { ...d, h1: 'What a party planner does', title_lead: 'What a party planner does' }, published: '2026-11-07' });
   assert.match(htmlWhat, /<ul><li>Pick the date<\/li>/);
 });
+test('publisher logo and sameAs reach the Organization nodes only when the config gives them', async () => {
+  const { render, publisherNode } = await import('../src/render.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sl-pub-'));
+  fs.writeFileSync(path.join(dir, 'c.json'), JSON.stringify(FIXTURE_CONFIG_RAW));
+  const { cfg } = (await import('../src/config.mjs')).loadConfig('c.json', dir);
+  const bare = publisherNode(cfg);
+  assert.equal(bare.logo, undefined);
+  assert.equal(bare.sameAs, undefined);
+  cfg.publisher = { name: 'Example Co', url: 'https://example.com', logo: 'https://example.com/logo.png', sameAs: ['https://profile.example.org/example'] };
+  const html = render(cfg, { slug: 'x', draft: fixtureDraft(), published: '2026-11-07' });
+  const graph = JSON.parse(html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/)[1])['@graph'];
+  const article = graph.find((n) => n['@type'] === 'Article');
+  for (const org of [article.author, article.publisher]) {
+    assert.equal(org['@type'], 'Organization');
+    assert.equal(org.logo, 'https://example.com/logo.png');
+    assert.deepEqual(org.sameAs, ['https://profile.example.org/example']);
+  }
+});
+
+test('site_words keeps topic words in a long site name comparable', async () => {
+  const { siteWordsOf, intentWords } = await import('../src/distinct.mjs');
+  const long = { site_name: "Dianne's Place Recovery Services" };
+  const withBrand = { ...long, site_words: "Dianne's Place" };
+  const a = intentWords('recovery housing for women', siteWordsOf(withBrand));
+  const b = intentWords('recovery housing for women', siteWordsOf(long));
+  assert.ok(a.size > b.size, 'the topic word "recovery" must stay when site_words names only the brand');
+  assert.ok(![...intentWords("dianne's place sober living", siteWordsOf(withBrand))].some((w) => /dianne|place/.test(w)));
+});
