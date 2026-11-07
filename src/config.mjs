@@ -45,6 +45,7 @@ export function checkConfig(c) {
   need(typeof c.site === 'string' && c.site.length > 2, 'site (a short id, e.g. the host) is required');
   need(/^https:\/\/[^/]+$/.test(c.base_url || ''), 'base_url must be https://host with no trailing slash');
   need(typeof c.site_name === 'string' && c.site_name.length > 1, 'site_name (the brand every title names) is required');
+  need(c.site_words === undefined || (typeof c.site_words === 'string' && c.site_words.trim().length > 1), 'site_words, when given, is the brand part of site_name as a string');
   need(typeof c.audience === 'string' && c.audience.length > 5, 'audience is required');
   need(typeof c.voice === 'string' && c.voice.length > 5, 'voice is required');
   need(Array.isArray(c.topics) && c.topics.length > 0, 'topics: at least one topic seed');

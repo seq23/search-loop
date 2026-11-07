@@ -208,7 +208,7 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
   // 4. Drop what the site already answers (those are strengthen candidates),
   //    and what a sibling with the same audience already holds.
   index = index || buildIndex(cfg);
-  const siteWords = new Set(contentWords(cfg.site_name));
+  const siteWords = new Set(contentWords(cfg.site_words || cfg.site_name));
   const engine = L.pages().pages || [];
   const { claims, notes } = await readSharedClaims(cfg, fetchImpl);
   if (notes.length) receipt.shared_audience = notes;

@@ -63,7 +63,7 @@ export function check(s) {
   if (!s.readme.includes('gh variable set SEARCH_LOOP_MODE --body slow -R seq23/search-loop')) p.push('README lacks the one-line switch command');
   if (!s.readme.includes(OFF_SENTENCE)) p.push('README does not quote the off sentence');
   if (!s.readme.includes('search-loop-week-v1')) p.push('README does not name the report schema');
-  for (const k of [...Object.keys(DEFAULTS), 'schema', 'site', 'base_url', 'site_name', 'audience', 'voice', 'topics', 'action', 'allowed_link_targets', 'output', 'template', 'publisher', 'indexnow', 'gsc']) {
+  for (const k of [...Object.keys(DEFAULTS), 'schema', 'site', 'base_url', 'site_name', 'site_words', 'audience', 'voice', 'topics', 'action', 'allowed_link_targets', 'output', 'template', 'publisher', 'indexnow', 'gsc']) {
     if (!new RegExp('`' + k + '[`.\\[]').test(s.readme)) p.push(`README does not document config key ${k}`);
   }
   // 5. $0 routing.

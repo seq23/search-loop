@@ -745,3 +745,13 @@ test('publisher logo and sameAs reach the Organization nodes only when the confi
     assert.deepEqual(org.sameAs, ['https://profile.example.org/example']);
   }
 });
+
+test('site_words keeps topic words in a long site name comparable', async () => {
+  const { siteWordsOf, intentWords } = await import('../src/distinct.mjs');
+  const long = { site_name: "Dianne's Place Recovery Services" };
+  const withBrand = { ...long, site_words: "Dianne's Place" };
+  const a = intentWords('recovery housing for women', siteWordsOf(withBrand));
+  const b = intentWords('recovery housing for women', siteWordsOf(long));
+  assert.ok(a.size > b.size, 'the topic word "recovery" must stay when site_words names only the brand');
+  assert.ok(![...intentWords("dianne's place sober living", siteWordsOf(withBrand))].some((w) => /dianne|place/.test(w)));
+});

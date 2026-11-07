@@ -108,6 +108,7 @@ The week report says: `published`, `held_by_cap`, `redirected` (with the existin
 | `protected_paths[]` | no | files/dirs the engine never edits (e.g. a protected sales page) |
 | `shares_audience_with[]` | no | `{site, ledger_url \| ledger_path}` of sibling sites; two sites never target the same search |
 | `local` | no | `{city, neighbourhoods[]}` adds local question sets |
+| `site_words` | no | the brand part of a long `site_name` (e.g. `"Dianne's Place"`), left out of intent comparisons instead of every word of the full name |
 | `publisher` | no | `{name, url, logo?, sameAs?[]}` for Article author/publisher (an organization; never an invented person); `logo` and `sameAs` are copied only when given |
 | `template` | no | `stylesheets[]`, `og_image{url,width,height}`, `header_html`, `footer_html`, `section_name` |
 | `related` | no | `max_pages_per_new_page` (2), `scan_dirs[]`, `skip_dirs[]` |
