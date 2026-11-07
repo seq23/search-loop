@@ -89,12 +89,14 @@ export function cleanDraft(d) {
 // phrase a fourth time is dropped. A paragraph, bullet or FAQ answer is never emptied by this.
 export const REPEAT_WORDS = 8;
 export const REPEAT_MAX = 3;
+const ABBREV = /\b(?:Mt|St|Dr|Mr|Mrs|Ms|Jr|Sr|Ave|Rd|Blvd|vs|etc|e\.g|i\.e|[A-Z])\.$/;
 const wordsOf = (t) => String(t).toLowerCase().match(/[a-z0-9][\w'’-]*/g) || [];
 const phrases = (t, n = REPEAT_WORDS) => { const w = wordsOf(t), out = []; for (let i = 0; i + n <= w.length; i++) out.push(w.slice(i, i + n).join(' ')); return out; };
 export function capRepeats(d) {
   const seen = new Map();
   const keep = (text) => {
-    const sentences = String(text).split(/(?<=[.!?])\s+/).filter(Boolean);
+    // A full stop after an abbreviation ("Mt. Moriah Station") does not end the sentence.
+    const sentences = String(text).split(/(?<=[.!?])\s+/).filter(Boolean).reduce((a, x) => (a.length && ABBREV.test(a[a.length - 1]) ? (a[a.length - 1] += ` ${x}`, a) : (a.push(x), a)), []);
     const kept = sentences.filter((s) => { const ph = phrases(s); if (ph.some((x) => (seen.get(x) || 0) >= REPEAT_MAX)) return false; ph.forEach((x) => seen.set(x, (seen.get(x) || 0) + 1)); return true; });
     return kept.length ? kept.join(' ') : '';
   };
