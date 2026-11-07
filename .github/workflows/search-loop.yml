@@ -39,6 +39,10 @@ on:
       commit_message:
         type: string
         default: "search loop: daily pages, checks and ledger"
+      open_loops_business:
+        description: The Boss OS brain slug this site's Open Loops rows belong to
+        type: string
+        default: spry
     secrets:
       OPENROUTER_API_KEY:
         required: false
@@ -60,6 +64,9 @@ on:
         required: false
       # v1.6.0: optional top-10 read for the can-be-#1 lane (Brave Search API, free credit only).
       BRAVE_SEARCH_API_KEY:
+        required: false
+      # v1.7.0: the run's named stops become Boss OS Open Loops rows (boss-os docs/open-loops.md).
+      BOSS_OPEN_LOOPS_TOKEN:
         required: false
     outputs:
       mode:
@@ -159,6 +166,15 @@ jobs:
             ${{ steps.engine.outputs.ledger_dir }}/pages.json
             ${{ steps.engine.outputs.ledger_dir }}/drafts/**
           if-no-files-found: ignore
+      - name: Report named stops to Open Loops (default branch; never fails the run)
+        if: always() && env.PUBLISH == 'true'
+        continue-on-error: true
+        env:
+          BOSS_OPEN_LOOPS_TOKEN: ${{ secrets.BOSS_OPEN_LOOPS_TOKEN }}
+        run: |
+          code="${{ steps.engine.outputs.exit_code }}"
+          [ -n "$code" ] || echo "NAMED STOP [ENGINE_DID_NOT_RUN] the engine step produced no exit code" >> .search-loop-run.log
+          node .search-loop-engine/bin/report-stops.mjs --log .search-loop-run.log --repo "${{ github.repository }}" --business "${{ inputs.open_loops_business }}"
       - name: Engine exit
         if: always()
         run: |
