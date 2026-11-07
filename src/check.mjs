@@ -12,7 +12,7 @@ import { render, withoutRelatedLink } from './render.mjs';
 import { gate } from './gate.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
 import { buildIndex } from './site-index.mjs';
-import { verifyFacts } from './build.mjs';
+import { verifyFacts, capRepeats } from './build.mjs';
 import { publishedFrozen } from './config.mjs';
 import { learnWeights } from './compete.mjs';
 
@@ -198,7 +198,7 @@ async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, note
   ] });
   if (!r.ok) { notes.push(`strengthen skipped for ${p.route}: ${r.reason}`); return false; }
   const add = parseJsonAnswer(r.answer) || {};
-  const next = { ...draft, sections: [...draft.sections, ...(add.sections || []).filter((s) => s?.heading && s?.paragraphs?.length).slice(0, 2)], faq: [...draft.faq, ...(add.faq || []).filter((f) => f?.q && f?.a)].slice(0, 6) };
+  const next = capRepeats({ ...draft, sections: [...draft.sections, ...(add.sections || []).filter((s) => s?.heading && s?.paragraphs?.length).slice(0, 2)], faq: [...draft.faq, ...(add.faq || []).filter((f) => f?.q && f?.a)].slice(0, 6) });
   next.facts = await verifyFacts(next.facts || [], fetchImpl);
   const before = fs.readFileSync(file, 'utf8');
   const relatedLinks = [...before.matchAll(/data-search-loop="related"[\s\S]*?<\/section>/g)].flatMap((m) => [...m[0].matchAll(/href="([^"]+)">([^<]+)</g)].map((x) => ({ route: x[1], anchor: x[2] })));
