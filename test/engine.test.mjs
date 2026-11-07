@@ -727,4 +727,21 @@ test('v1.7.1 page shape: a stock sentence is used at most three times; a how-to 
   assert.doesNotMatch(htmlHow, /<ul><li>Pick the date/);
   const htmlWhat = render(cfg, { slug: 'what-is', draft: { ...d, h1: 'What a party planner does', title_lead: 'What a party planner does' }, published: '2026-11-07' });
   assert.match(htmlWhat, /<ul><li>Pick the date<\/li>/);
+test('publisher logo and sameAs reach the Organization nodes only when the config gives them', async () => {
+  const { render, publisherNode } = await import('../src/render.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sl-pub-'));
+  fs.writeFileSync(path.join(dir, 'c.json'), JSON.stringify(FIXTURE_CONFIG_RAW));
+  const { cfg } = (await import('../src/config.mjs')).loadConfig('c.json', dir);
+  const bare = publisherNode(cfg);
+  assert.equal(bare.logo, undefined);
+  assert.equal(bare.sameAs, undefined);
+  cfg.publisher = { name: 'Example Co', url: 'https://example.com', logo: 'https://example.com/logo.png', sameAs: ['https://profile.example.org/example'] };
+  const html = render(cfg, { slug: 'x', draft: fixtureDraft(), published: '2026-11-07' });
+  const graph = JSON.parse(html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/)[1])['@graph'];
+  const article = graph.find((n) => n['@type'] === 'Article');
+  for (const org of [article.author, article.publisher]) {
+    assert.equal(org['@type'], 'Organization');
+    assert.equal(org.logo, 'https://example.com/logo.png');
+    assert.deepEqual(org.sameAs, ['https://profile.example.org/example']);
+  }
 });

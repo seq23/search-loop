@@ -108,7 +108,7 @@ The week report says: `published`, `held_by_cap`, `redirected` (with the existin
 | `protected_paths[]` | no | files/dirs the engine never edits (e.g. a protected sales page) |
 | `shares_audience_with[]` | no | `{site, ledger_url \| ledger_path}` of sibling sites; two sites never target the same search |
 | `local` | no | `{city, neighbourhoods[]}` adds local question sets |
-| `publisher` | no | `{name, url}` for Article author/publisher (an organization; never an invented person) |
+| `publisher` | no | `{name, url, logo?, sameAs?[]}` for Article author/publisher (an organization; never an invented person); `logo` and `sameAs` are copied only when given |
 | `template` | no | `stylesheets[]`, `og_image{url,width,height}`, `header_html`, `footer_html`, `section_name` |
 | `related` | no | `max_pages_per_new_page` (2), `scan_dirs[]`, `skip_dirs[]` |
 | `competition` | no | `lanes` `{can_be_one: 2, striking: 1}`, `top10` `{provider: brave\|none, daily_budget: 15, monthly_budget: 50}` (can lower, never raise past the fleet ceiling), `min_can_be_one` 15 |
@@ -168,4 +168,4 @@ npm run check        # validator + its self-test, unit tests, engine --self-test
 node bin/search-loop.mjs run --config search-loop.config.json --stage find   # in a site checkout
 ```
 
-Releases: semver tags `v1.x.y` plus the moving `v1` tag that callers pin. v1.7.1: a sentence that would use an 8-word phrase a fourth time is dropped from the draft (template filler, the Monday page-quality sample), and a how-to page gives its bullets as numbered steps (`<ol>`). v1.7.0: every run's `NAMED STOP [CODE]` becomes a Boss OS Open Loops row (bin/report-stops.mjs, one per repo#CODE; a cleared code closes its row); pass `BOSS_OPEN_LOOPS_TOKEN` in the caller's `secrets:` block, optional `open_loops_business` (default `spry`). v1.3.0: distinct intent gate, outcome-gated per-site cap (replaces the fixed pace), frozen published pages for Horse and Hicks.
+Releases: semver tags `v1.x.y` plus the moving `v1` tag that callers pin. v1.7.2: `publisher.logo` and `publisher.sameAs` reach the Article author/publisher Organization; optional `site_words`. v1.7.1: a sentence that would use an 8-word phrase a fourth time is dropped from the draft (template filler, the Monday page-quality sample), and a how-to page gives its bullets as numbered steps (`<ol>`). v1.7.0: every run's `NAMED STOP [CODE]` becomes a Boss OS Open Loops row (bin/report-stops.mjs, one per repo#CODE; a cleared code closes its row); pass `BOSS_OPEN_LOOPS_TOKEN` in the caller's `secrets:` block, optional `open_loops_business` (default `spry`). v1.3.0: distinct intent gate, outcome-gated per-site cap (replaces the fixed pace), frozen published pages for Horse and Hicks.
