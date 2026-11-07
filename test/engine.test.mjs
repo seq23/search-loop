@@ -716,6 +716,11 @@ test('v1.7.1 page shape: a stock sentence is used at most three times; a how-to 
   assert.deepEqual(d.sections[1].paragraphs, ['We confirm by text. Then we arrive early.'], 'a fourth use is dropped, and a paragraph that was only the repeat goes');
   assert.equal(d.faq[0].a, 'No.');
   assert.equal(d.faq[1].a, 'Yes. Bring candles.');
+  // An abbreviation's full stop does not hide a repeat ("Mt. Moriah Station" split in two).
+  const mt = 'Rentals are picked up at Mt. Moriah Station in Memphis, never delivered.';
+  const md = cleanDraft({ ...raw, direct_answer: `Games are fun. ${mt}`, sections: [{ heading: 'Where?', paragraphs: [mt, `Easy. ${mt}`, `Also. ${mt}`] }], faq: [{ q: 'Pickup?', a: `Yes. ${mt}` }] });
+  assert.deepEqual(repeatedSlots(visible(md)), []);
+  assert.equal(md.faq[0].a, 'Yes.');
   // Negative: a draft with no repeats is returned unchanged.
   const fx = (await import('../src/fixture.mjs')).fixtureDraft();
   const same = cleanDraft(fx);
