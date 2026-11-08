@@ -772,3 +772,53 @@ test('a slip in the leading question word never reaches the page address', async
   assert.equal(slugify('hot tub rental near me'), 'hot-tub-rental-near-me');
   assert.equal(slugify('how to set up a virtual event'), 'how-to-set-up-a-virtual-event');
 });
+
+// ---- v1.9.0: the voice line is never copy; pages built before v1.7.1 are re-rendered once ----
+import { draftPrompt, shapeGaps } from '../src/build.mjs';
+import { RESHAPE_VERSION } from '../src/check.mjs';
+
+test('the draft prompt labels the voice line as a style guide, never copy, and forbids repeated phrases', () => {
+  const cfg = structuredClone(FIXTURE_CONFIG_RAW);
+  const m = draftPrompt(cfg, { query: 'how to book a birthday party' }, [], null);
+  assert.match(m[0].content, /Voice \(how to write; never copy these sentences into the page\): /);
+  assert.match(m[1].content, /no sentence or phrase repeated anywhere on the page/);
+});
+
+test('shapeGaps: an 8-word phrase is filler at 4 uses, not 3; a how-to needs an <ol>', () => {
+  const s = '<p>You give us the date and the place, and we bring everything.</p>';
+  const page = (n, list = 'ol') => `<html><head><title>How to book a party — X</title></head><body><main><h1>How to book a party</h1>${s.repeat(n)}<${list}><li>a</li></${list}></main></body></html>`;
+  assert.deepEqual(shapeGaps(page(3), 'how to book a party'), {});
+  assert.match(shapeGaps(page(4), 'how to book a party').filler, /appears 4 times/);
+  assert.ok(shapeGaps(page(1, 'ul'), 'how to book a party').steps);
+  assert.equal(shapeGaps(page(1, 'ul').replace(/How to book a party/g, 'Party booking'), 'party booking').steps, undefined, 'only a how-to needs steps');
+});
+
+test('CHECK reshape: a live page with filler is re-rendered from its draft and snapshotted; without a draft it is left byte-identical and not retried', async () => {
+  const root = site();
+  await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: distinctChat() });
+  const L = path.join(root, 'data/search-loop/pages.json');
+  const [a, b] = JSON.parse(fs.readFileSync(L)).pages.filter((x) => x.status === 'live');
+  assert.ok(a && b, 'two live pages to work with');
+  // Pages from the old engine: one stock sentence after every heading.
+  const old = (p) => { const f = path.join(root, p.rel); const h = fs.readFileSync(f, 'utf8').replace(/<\/h2>/g, '</h2><p>You give us the date and the place, and we bring everything.</p>'); fs.writeFileSync(f, h); return h; };
+  const beforeA = old(a); const beforeB = old(b);
+  assert.ok(shapeGaps(beforeA, a.query).filler && shapeGaps(beforeB, b.query).filler);
+  fs.rmSync(path.join(root, 'data/search-loop/drafts', `${b.slug}.json`));
+  const day2 = new Date(NOW.getTime() + 86400000);
+  const r = await run({ root, now: day2, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: distinctChat(), stage: 'check' });
+  assert.equal(r.did.check.reshaped, 1, r.report?.notes?.join(' | '));
+  const pages = JSON.parse(fs.readFileSync(L)).pages;
+  const pa = pages.find((x) => x.slug === a.slug), pb = pages.find((x) => x.slug === b.slug);
+  const nowA = fs.readFileSync(path.join(root, a.rel), 'utf8');
+  assert.deepEqual(shapeGaps(nowA, a.query), {});
+  assert.deepEqual(pa.reshaped.fixed, ['filler']);
+  assert.equal(pa.reshaped.v, RESHAPE_VERSION);
+  assert.equal(fs.readFileSync(path.join(root, 'data/search-loop/snapshots', `${pa.reshaped.before_hash}.html`), 'utf8'), beforeA, 'the old page is snapshotted');
+  assert.equal(fs.readFileSync(path.join(root, b.rel), 'utf8'), beforeB, 'no draft: the page is left as it was');
+  assert.deepEqual(pb.reshaped.fixed, []);
+  assert.match(pb.reshaped.left.join(' '), /no saved draft/);
+  // Next run: nothing is tried again (same engine, same result).
+  const r2 = await run({ root, now: new Date(day2.getTime() + 86400000), 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: distinctChat(), stage: 'check' });
+  assert.equal(r2.did.check.reshaped, undefined);
+  assert.equal(fs.readFileSync(path.join(root, a.rel), 'utf8'), nowA);
+});

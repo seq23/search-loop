@@ -12,7 +12,7 @@ import { render, withoutRelatedLink } from './render.mjs';
 import { gate } from './gate.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
 import { buildIndex } from './site-index.mjs';
-import { verifyFacts, capRepeats } from './build.mjs';
+import { verifyFacts, capRepeats, shapeGaps } from './build.mjs';
 import { publishedFrozen } from './config.mjs';
 import { learnWeights } from './compete.mjs';
 
@@ -140,6 +140,9 @@ export async function check(cfg, { rules: modeRules, mode, now = new Date(), fet
   const index = buildIndex(cfg, { withText: true });
   const winners = L.read('winners', { topics: [] });
   const consolidation = L.read('consolidation', { schema: 'search-loop-consolidation-v1', merges: [] });
+  // v1.9.0: live pages built before v1.7.1 (a how-to with no numbered steps, template filler) are
+  // re-rendered once from their saved draft through today's write path (capRepeats + render). No model call.
+  if (rules.strengthen) for (const p of live) if (reshape(cfg, L, p, { today, index, notes })) res.reshaped = (res.reshaped || 0) + 1;
   for (const p of live) {
     const due = dueCheckpoints(p, today);
     const strengthenDue = p.strengthen && !p.strengthen.verdict && daysBetween(p.strengthen.at, today) >= STRENGTHEN_SETTLE_DAYS;
@@ -182,6 +185,37 @@ function undo(cfg, L, p, today, snap) {
   const snapFile = L.snapshotPath(p.strengthen.before_hash);
   if (fs.existsSync(snapFile)) fs.writeFileSync(path.join(cfg.root, p.rel), fs.readFileSync(snapFile));
   p.strengthen.verdict = { at: today, undone: true, position: snap.position, reason: `position ${snap.position} is worse than ${p.strengthen.baseline_position} by more than ${UNDO_IF_WORSE_BY}` };
+}
+
+export const RESHAPE_VERSION = 1;
+
+// Kept only if the re-render passes the gate with every gap gone; the old page is snapshotted.
+// A page that cannot be cleared this way is recorded under RESHAPE_VERSION with what is left, and
+// not tried again until a later engine bumps the version (re-rendering the same draft gives the same page).
+export function reshape(cfg, L, p, { today, index = [], notes = [] }) {
+  if (p.reshaped?.v === RESHAPE_VERSION || (p.strengthen && !p.strengthen.verdict)) return false;
+  const draftFile = path.join(L.dir, 'drafts', `${p.slug}.json`);
+  const file = path.join(cfg.root, p.rel);
+  if (!fs.existsSync(file)) return false;
+  const before = fs.readFileSync(file, 'utf8');
+  const gaps = shapeGaps(before, p.query);
+  if (!Object.keys(gaps).length) return false;
+  const left = (why) => { p.reshaped = { v: RESHAPE_VERSION, at: today, fixed: [], left: why }; notes.push(`reshape of ${p.route} left as it was: ${why.slice(0, 2).join('; ')}`); return false; };
+  if (!fs.existsSync(draftFile)) return left([...Object.values(gaps), 'no saved draft to re-render']);
+  const next = capRepeats(JSON.parse(fs.readFileSync(draftFile, 'utf8')));
+  const relatedLinks = [...before.matchAll(/data-search-loop="related"[\s\S]*?<\/section>/g)].flatMap((m) => [...m[0].matchAll(/href="([^"]+)">([^<]+)</g)].map((x) => ({ route: x[1], anchor: x[2] })));
+  const html = render(cfg, { slug: p.slug, draft: next, related: relatedLinks, published: p.published_at, modified: today });
+  const problems = [...gate({ query: p.query, html, facts: next.facts || [] }, { cfg, corpus: index, selfRoute: p.route }), ...Object.values(shapeGaps(html, p.query))];
+  if (problems.length) return left(problems);
+  const bh = sha256(before);
+  fs.mkdirSync(path.dirname(L.snapshotPath(bh)), { recursive: true });
+  fs.writeFileSync(L.snapshotPath(bh), before);
+  fs.writeFileSync(file, html);
+  fs.writeFileSync(draftFile, JSON.stringify(next, null, 2) + '\n');
+  p.hash = sha256(html);
+  p.reshaped = { v: RESHAPE_VERSION, at: today, fixed: Object.keys(gaps), before_hash: bh, after_hash: p.hash };
+  notes.push(`reshape: ${p.route} re-rendered (${Object.keys(gaps).join(', ')})`);
+  return true;
 }
 
 async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, notes }) {
