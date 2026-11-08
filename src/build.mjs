@@ -59,7 +59,7 @@ export function draftPrompt(cfg, target, related, problems) {
   const place = places.find((pl) => String(target.query).toLowerCase().includes(String(pl).toLowerCase()));
   const local = place && cfg.local?.substance ? `\nThis is a local page for ${place}. ${cfg.local.substance}` : '';
   return [
-    { role: 'system', content: `You write one web page that answers one search for ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Voice: ${cfg.voice}. You return ONLY a JSON object, no prose around it.` },
+    { role: 'system', content: `You write one web page that answers one search for ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Voice (how to write; never copy these sentences into the page): ${cfg.voice}. You return ONLY a JSON object, no prose around it.` },
     { role: 'user', content: `Search to answer: "${target.query}"
 Existing pages on the site you may mention by title (do not invent others): ${related.map((r) => r.title).join(' | ') || 'none'}
 The page ends by inviting the reader to: ${cfg.action.label}.${facts}${local}
@@ -75,7 +75,7 @@ Return JSON with exactly these keys:
  "facts": [ {"claim": "one checkable fact in one sentence", "source_url": "https URL of a well-known public page that states it (government, university, major publication, Wikipedia)", "source_name": "publisher name"} ]  // 2-4, from at least 2 different sources
 }
 If this search does not fit the audience or the site (a different meaning of the words, someone else's brand), return {"skip":"why"} instead.
-Hard rules: no statistics, percentages or "studies show" anywhere except inside "facts"; no named people, quotes, doctors, credentials, reviews, testimonials or star ratings; no promises of outcomes${cfg.health_gate !== 'none' ? '; no treatment or outcome claims, never "painless", no medical advice, no hours or services beyond the real facts' : ''}; no filler; second person, short sentences.${problems ? `\n\nYour previous draft failed these checks; fix every one:\n- ${problems.join('\n- ')}` : ''}` },
+Hard rules: no statistics, percentages or "studies show" anywhere except inside "facts"; no named people, quotes, doctors, credentials, reviews, testimonials or star ratings; no sentence or phrase repeated anywhere on the page (say each thing once, in words only this page would use); no promises of outcomes${cfg.health_gate !== 'none' ? '; no treatment or outcome claims, never "painless", no medical advice, no hours or services beyond the real facts' : ''}; no filler; second person, short sentences.${problems ? `\n\nYour previous draft failed these checks; fix every one:\n- ${problems.join('\n- ')}` : ''}` },
   ];
 }
 
@@ -120,6 +120,22 @@ export function capRepeats(d) {
   });
   const faq = (d.faq || []).map((f) => ({ ...f, a: keep(f.a) || f.a }));
   return { ...d, direct_answer, sections, faq };
+}
+
+// v1.9.0: the page-shape gaps v1.7.1 fixes at write time, read off a live page, so CHECK can
+// re-render pages built before it (reshape): a how-to with no numbered steps (d2) and template
+// filler (an 8-word phrase more than REPEAT_MAX times in <main>). Same tests as the write path.
+export function shapeGaps(html, query) {
+  const main = (String(html).match(/<main[\s\S]*?<\/main>/i) || [String(html)])[0];
+  const title = stripTags((String(html).match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '');
+  const h1 = stripTags((main.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i) || [])[1] || '');
+  const out = {};
+  if (/\bhow to\b/i.test(`${query || ''} ${title} ${h1}`) && !/<ol\b/i.test(main)) out.steps = 'd2: a how-to page has no numbered steps';
+  const seen = new Map();
+  for (const x of phrases(stripTags(main.replace(/<\/(p|li|h[1-6]|section)>/gi, ' </$1>')))) seen.set(x, (seen.get(x) || 0) + 1);
+  const top = [...seen].filter(([, c]) => c > REPEAT_MAX).sort((a, b) => b[1] - a[1])[0];
+  if (top) out.filler = `filler: "${top[0]}" appears ${top[1]} times`;
+  return out;
 }
 
 export async function verifyFacts(facts, fetchImpl = fetch) {

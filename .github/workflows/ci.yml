@@ -15,3 +15,30 @@ jobs:
         with:
           node-version: 24
       - run: npm run check
+  # Release (v1.9.0): a merge whose title starts "vX.Y.Z:" (this repo's convention) is
+  # tagged vX.Y.Z and the moving v1 tag every caller pins is moved to it, only after
+  # the check above passed on that commit. Before this, tags were moved by hand after
+  # each merge, and a merged engine fix reached no site until someone did.
+  release:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag vX.Y.Z and move v1
+        env:
+          SUBJECT: ${{ github.event.head_commit.message }}
+        run: |
+          ver=$(printf '%s\n' "$SUBJECT" | head -1 | sed -nE 's/^v(1\.[0-9]+\.[0-9]+):.*/\1/p')
+          if [ -z "$ver" ]; then echo "OUTPUT release: not a release commit (title has no v1.x.y: prefix); v1 unchanged"; exit 0; fi
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$pkg" != "$ver" ]; then echo "::error::NAMED STOP [VERSION_MISMATCH] commit says v$ver, package.json says $pkg; not tagged"; exit 1; fi
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse -q --verify "refs/tags/v$ver" >/dev/null; then echo "v$ver already tagged"; else git tag -a "v$ver" -m "v$ver" && git push origin "v$ver"; fi
+          git tag -fa v1 -m "v1 -> v$ver" && git push -f origin v1
+          echo "OUTPUT release: v$ver tagged, v1 -> $(git rev-parse --short HEAD)"
