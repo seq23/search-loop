@@ -55,8 +55,28 @@ export function norm(q) {
 const STOP = new Set('a an the and or of to for in on at is are be with my your i you me do does how what why when can should vs best way ways it this that from by as'.split(' '));
 export const contentWords = (q) => norm(q).split(' ').filter((w) => w && !STOP.has(w));
 
+// A search typed with a slip in its question word ("hot to set up a virtual
+// event", Bing suggest via virtualagency-os.com, 6 Nov 2026) became the page's
+// address, /questions/hot-to-set-up-a-virtual-event, while the model wrote a
+// correct title. The address is the one part nobody re-reads, so the common
+// slips in the leading question word are corrected before it is made.
+const QUESTION_WORD_SLIPS = [
+  [/^(?:hot|hpw|hoe|hiw|hw|hwo|ho) to /, 'how to '],
+  [/^how ot /, 'how to '],
+  [/^(?:hwo|hw|hpw) /, 'how '],
+  [/^(?:waht|whta|wht) /, 'what '],
+  [/^(?:whay|wy) /, 'why '],
+  [/^(?:wehn|whn) /, 'when '],
+  [/^(?:wich|whcih|whihc) /, 'which '],
+];
+export function fixQuestionWord(q) {
+  let s = norm(q);
+  for (const [re, to] of QUESTION_WORD_SLIPS) s = s.replace(re, to);
+  return s;
+}
+
 export function slugify(q, max = 70) {
-  const s = norm(q).replace(/\s+/g, '-');
+  const s = fixQuestionWord(q).replace(/\s+/g, '-');
   return s.length <= max ? s : s.slice(0, max).replace(/-[^-]*$/, '');
 }
 

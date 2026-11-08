@@ -761,3 +761,14 @@ test('site_words keeps topic words in a long site name comparable', async () => 
   assert.ok(a.size > b.size, 'the topic word "recovery" must stay when site_words names only the brand');
   assert.ok(![...intentWords("dianne's place sober living", siteWordsOf(withBrand))].some((w) => /dianne|place/.test(w)));
 });
+
+test('a slip in the leading question word never reaches the page address', async () => {
+  const { slugify } = await import('../src/util.mjs');
+  assert.equal(slugify('hot to set up a virtual event'), 'how-to-set-up-a-virtual-event');
+  assert.equal(slugify('waht is a webinar'), 'what-is-a-webinar');
+  assert.equal(slugify('how ot run a webinar'), 'how-to-run-a-webinar');
+  // Correct words and a slip later in the query are left alone.
+  assert.equal(slugify("what's a hot tub party"), 'whats-a-hot-tub-party');
+  assert.equal(slugify('hot tub rental near me'), 'hot-tub-rental-near-me');
+  assert.equal(slugify('how to set up a virtual event'), 'how-to-set-up-a-virtual-event');
+});
