@@ -17,6 +17,19 @@ import { isProtected, publishedFrozen, approvalOf } from './config.mjs';
 import { laneQueue, laneRatio } from './compete.mjs';
 
 export const DROP_RETRY_DAYS = 28;
+// A drop whose every problem is one the next draft can fix (a length aim, too few
+// working sources, a malformed or missing model answer) is tried again after
+// FIXABLE_RETRY_DAYS, starting from last time's problems; after
+// FIXABLE_MAX_DROPS drops of the same search it waits the full DROP_RETRY_DAYS.
+export const FIXABLE_RETRY_DAYS = 3;
+export const FIXABLE_MAX_DROPS = 3;
+const FIXABLE = [/^b[45] .* words \(aim \d/, /^b9 \d+ words of visible text/, /^facts: needs at least 2 distinct sources/, /^the answer was not the JSON object/, /^no draft from the free model/];
+export const fixableDrop = (d) => Array.isArray(d.reason) && d.reason.length > 0 && d.reason.every((r) => FIXABLE.some((re) => re.test(String(r))));
+// Pages are written in the site's language; a search clearly in another language
+// (a stopword from it, or letters English never uses) is skipped, not queued.
+const NOT_ENGLISH = /\b(gibt|es|was|besseres|kosten|sessie|hoe|vaak|vinden|wat|het|een|und|oder|wie|f\u00fcr|ist|nicht|que|para|como|los|las|por|qu\u00e9|c'est|pour|avec|les|des|une|est)\b|[\u00e0-\u00ff\u00df]/i;
+export const retryWaitDays = (d, dropsOfQuery) => (fixableDrop(d) && dropsOfQuery < FIXABLE_MAX_DROPS ? FIXABLE_RETRY_DAYS : DROP_RETRY_DAYS);
+export const offLanguage = (cfg, query) => (cfg.language || 'en').startsWith('en') && NOT_ENGLISH.test(String(query));
 export const MAX_ATTEMPTS = 3; // one draft + two fix passes, then drop
 
 export function menuRoutes(cfg) {
@@ -208,8 +221,17 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
   // A gate drop (reason is the gate's problem list) recorded under an older gate is
   // retried now; path drops and redirects keep the 28-day wait.
   const staleGateDrop = (d) => Array.isArray(d.reason) && d.gate !== GATE_VERSION && !String(d.reason[0] || '').startsWith('same intent as');
-  const recentlyDropped = new Set([...book.dropped, ...book.redirected].filter((d) => daysBetween(d.at, today) < DROP_RETRY_DAYS && !staleGateDrop(d)).map((d) => keyOf(d.query)));
-  const queue = targets.filter((t) => !taken.has(keyOf(t.query)) && !recentlyDropped.has(keyOf(t.query)));
+  const dropCount = new Map();
+  for (const d of book.dropped) dropCount.set(keyOf(d.query), (dropCount.get(keyOf(d.query)) || 0) + 1);
+  const waitFor = (d) => retryWaitDays(d, dropCount.get(keyOf(d.query)) || 0);
+  const recentlyDropped = new Set([...book.dropped.map((d) => ({ d, wait: waitFor(d) })), ...book.redirected.map((d) => ({ d, wait: DROP_RETRY_DAYS }))]
+    .filter(({ d, wait }) => daysBetween(d.at, today) < wait && !staleGateDrop(d)).map(({ d }) => keyOf(d.query)));
+  // The last fixable drop's problems start the next draft, so the first pass fixes them.
+  const lastProblems = new Map();
+  for (const d of book.dropped) if (fixableDrop(d)) lastProblems.set(keyOf(d.query), d.reason); else lastProblems.delete(keyOf(d.query));
+  const offLang = targets.filter((t) => offLanguage(cfg, t.query));
+  if (offLang.length) result.skipped_language = offLang.length;
+  const queue = targets.filter((t) => !taken.has(keyOf(t.query)) && !recentlyDropped.has(keyOf(t.query)) && !offLanguage(cfg, t.query));
   const index = buildIndex(cfg, { withText: true });
   const corpus = corpusFor(cfg, index, book);
   const answers = engineAnswers(cfg, L, book);
@@ -241,9 +263,10 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     const route = cfg.output.url_prefix + slug + (cfg.output.format === 'dir-index' ? '/' : '');
     if (fs.existsSync(path.join(cfg.root, rel)) || (appr && fs.existsSync(path.join(cfg.root, appr.pending_dir, rel))) || isProtected(cfg, rel)) { book.dropped.push({ query: target.query, at: today, reason: 'path exists or is protected' }); result.dropped++; continue; }
     const related = pickRelated(cfg, index, target.query, { n: 3 });
+    const seed = lastProblems.get(keyOf(target.query)) || null;
     let problems = null; let html = null; let draft = null; let gateNotes = [];
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      const r = await chat({ cfg, messages: draftPrompt(cfg, target, related, problems), fetchImpl });
+      const r = await chat({ cfg, messages: draftPrompt(cfg, target, related, problems || seed), fetchImpl });
       if (!r.ok) {
         if (r.stop === 'MODEL_TIME_BUDGET') { result.model_failed = (result.model_failed || 0) + 1; notes.push(`NAMED NOTE [RUN_TIME_BUDGET] ${r.reason}`); return finish(); }
         if (r.stop === 'FREE_MODEL_KEY_MISSING' || r.stop === 'FREE_MODEL_KEY_REFUSED') { notes.push(`NAMED STOP [${r.stop}] ${r.reason}; BUILD wrote nothing, CHECK and the report still run`); result.stopped = r.stop; return finish(); }
