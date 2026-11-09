@@ -774,7 +774,7 @@ test('a slip in the leading question word never reaches the page address', async
 });
 
 // ---- v1.9.0: the voice line is never copy; pages built before v1.7.1 are re-rendered once ----
-import { draftPrompt, shapeGaps } from '../src/build.mjs';
+import { draftPrompt, shapeGaps, defineLead } from '../src/build.mjs';
 import { RESHAPE_VERSION } from '../src/check.mjs';
 
 test('the draft prompt labels the voice line as a style guide, never copy, and forbids repeated phrases', () => {
@@ -791,6 +791,15 @@ test('shapeGaps: an 8-word phrase is filler at 4 uses, not 3; a how-to needs an 
   assert.match(shapeGaps(page(4), 'how to book a party').filler, /appears 4 times/);
   assert.ok(shapeGaps(page(1, 'ul'), 'how to book a party').steps);
   assert.equal(shapeGaps(page(1, 'ul').replace(/How to book a party/g, 'Party booking'), 'party booking').steps, undefined, 'only a how-to needs steps');
+});
+
+test('b4 lead (v1.9.2): an engine answer that defines nothing is a reshape gap; the writer rewrites the two shapes and leaves others for the model', () => {
+  const pg = (a) => `<html><head><title>T</title></head><body><main><h1>H</h1><p class="direct-answer">${a}</p><ol><li>a</li></ol></main></body></html>`;
+  assert.ok(shapeGaps(pg('Party rentals Memphis services include games.'), 'party rentals memphis').lead);
+  assert.equal(shapeGaps(pg('Party rentals are games.'), 'party rentals memphis').lead, undefined);
+  assert.equal(defineLead({ direct_answer: 'To set up a hotel room, check in early.' }).direct_answer, 'The way to set up a hotel room is to check in early.');
+  assert.equal(defineLead({ direct_answer: 'Party rentals Memphis services include games.' }).direct_answer, 'Party rentals Memphis services are games.');
+  assert.equal(defineLead({ direct_answer: 'To book, you call us.' }).direct_answer, 'To book, you call us.', 'a non-imperative rest is left for the model');
 });
 
 test('CHECK reshape: a live page with filler is re-rendered from its draft and snapshotted; without a draft it is left byte-identical and not retried', async () => {

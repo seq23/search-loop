@@ -92,7 +92,7 @@ export function cleanDraft(d) {
     facts: (Array.isArray(d.facts) ? d.facts : []).map((f) => ({ claim: str(f?.claim), source_url: str(f?.source_url), source_name: str(f?.source_name) })).filter((f) => f.claim && /^https:\/\//.test(f.source_url)).slice(0, 4),
   };
   if (!(out.h1 && out.direct_answer && out.sections.length && out.faq.length)) return null;
-  return capRepeats(out);
+  return defineLead(capRepeats(out));
 }
 
 // v1.7.1: a stock sentence the model repeats ("you give us the date and the place, and we bring
@@ -122,6 +122,22 @@ export function capRepeats(d) {
   return { ...d, direct_answer, sections, faq };
 }
 
+// v1.9.2: the answer under the H1 must define its subject ("X is ...", page-shape b4). The prompt asks
+// for it, but free models often open "To X, do Y" or "X services include Y" (porchandparty901.com,
+// 9 Nov 2026: /questions/party-rentals-memphis failed the Monday sample's b4). The writer rewrites
+// those two shapes without adding facts; any other lead is sent back to the model (BUILD) once more.
+export const DEFINES = /\b(is|are)\b/; // the same test as the gate's b4 note and boss-os page-quality-sample b4
+const NOT_IMPERATIVE = /^(you|your|we|our|i|it|they|this|that|there|the|a|an|most|many|some|all|people)\b/i;
+export function defineLead(d) {
+  const a = String(d?.direct_answer || '');
+  if (!a || DEFINES.test(a)) return d;
+  let m = a.match(/^To ([^,.;:]{3,140}), ([a-z][\s\S]*)$/);
+  if (m && !NOT_IMPERATIVE.test(m[2])) return { ...d, direct_answer: `The way to ${m[1]} is to ${m[2]}` };
+  m = a.match(/^([A-Z][^,.;:]{2,100}?) (include|includes|offer|offers|cover|covers|feature|features|mean|means) ([\s\S]+)$/);
+  if (m) return { ...d, direct_answer: `${m[1]} ${m[2].endsWith('s') ? 'is' : 'are'} ${m[3]}` };
+  return d;
+}
+
 // v1.9.0: the page-shape gaps v1.7.1 fixes at write time, read off a live page, so CHECK can
 // re-render pages built before it (reshape): a how-to with no numbered steps (d2) and template
 // filler (an 8-word phrase more than REPEAT_MAX times in <main>). Same tests as the write path.
@@ -135,6 +151,9 @@ export function shapeGaps(html, query) {
   for (const x of phrases(stripTags(main.replace(/<\/(p|li|h[1-6]|section)>/gi, ' </$1>')))) seen.set(x, (seen.get(x) || 0) + 1);
   const top = [...seen].filter(([, c]) => c > REPEAT_MAX).sort((a, b) => b[1] - a[1])[0];
   if (top) out.filler = `filler: "${top[0]}" appears ${top[1]} times`;
+  // v1.9.2: only the engine's own answer paragraph (class="direct-answer") is read for b4.
+  const lead = main.match(/<p class="direct-answer">([\s\S]*?)<\/p>/i);
+  if (lead && !DEFINES.test(stripTags(lead[1]))) out.lead = 'b4: the answer under the H1 defines nothing ("X is ...")';
   return out;
 }
 
@@ -280,7 +299,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     if (fs.existsSync(path.join(cfg.root, rel)) || (appr && fs.existsSync(path.join(cfg.root, appr.pending_dir, rel))) || isProtected(cfg, rel)) { book.dropped.push({ query: target.query, at: today, reason: 'path exists or is protected' }); result.dropped++; continue; }
     const related = pickRelated(cfg, index, target.query, { n: 3 });
     const seed = lastProblems.get(keyOf(target.query)) || null;
-    let problems = null; let html = null; let draft = null; let gateNotes = [];
+    let problems = null; let html = null; let draft = null; let gateNotes = []; let passing = null;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const r = await chat({ cfg, messages: draftPrompt(cfg, target, related, problems || seed), fetchImpl });
       if (!r.ok) {
@@ -310,7 +329,17 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
       const post = matchIntent(cfg, draft.h1, corpus) || matchAnswer(cfg, draft.direct_answer, answers);
       if (post) { draft = null; html = null; problems = null; target.__redirect = post; break; }
       ({ problems, notes: gateNotes } = gateReport({ query: target.query, html, facts: draft.facts }, { cfg, corpus: index, siblings, selfRoute: route }));
-      if (!problems.length) break;
+      if (!problems.length) {
+        // v1.9.2: a passing draft whose answer still defines nothing is asked for once more; it is kept
+        // (with its gate note) if that try does not come back better.
+        if (DEFINES.test(draft.direct_answer) || attempt >= MAX_ATTEMPTS - 1 || passing) break;
+        passing = { html, draft, gateNotes };
+        problems = [`b4 the direct answer must open by defining the subject in the form "<subject> is ...": "${draft.direct_answer.slice(0, 80)}"`];
+        continue;
+      }
+    }
+    if (passing && (!html || problems?.length || target.__redirect || !DEFINES.test(draft?.direct_answer || ''))) {
+      ({ html, draft, gateNotes } = passing); problems = []; delete target.__redirect;
     }
     if (target.__redirect) { const m = target.__redirect; delete target.__redirect; redirectToStrengthen(L, book, target, m, { today, stage: 'draft', frozen }); if (frozen) result.skipped_same_intent = (result.skipped_same_intent || 0) + 1; else result.redirected++; continue; }
     if (!html && !problems) { result.model_failed = (result.model_failed || 0) + 1; continue; } // model never answered: retry next run, not a drop
