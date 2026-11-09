@@ -45,6 +45,8 @@ export function cases() {
     ['one source only (v1.5.0)', g((d) => { d.facts = d.facts.slice(0, 1); })],
     ['no list or table in the body (v1.5.0)', g((d) => { d.sections = d.sections.map((x) => ({ ...x, bullets: [] })); })],
     ['near-duplicate', () => { const d = fixtureDraft(); const p = page(cfg, d); return gate(p, { cfg, corpus: [{ route: '/copy/', sh: new Set(awaitShingles(p.html)) }], siblings: [] }); }],
+    ['site banned word (gate.banned_patterns)', g((d) => { d.sections[0].paragraphs[0] += ' This proves your plan works.'; }, (c) => ({ ...c, gate: { banned_patterns: ['\\bproves\\b'] } }))],
+    ['config: banned pattern that is not a regex', () => checkConfig({ ...FIXTURE_CONFIG_RAW, gate: { banned_patterns: ['('] } })],
     ['health: painless', g((d) => { d.sections[0].paragraphs[0] += ' The visit is painless.'; }, health)],
     ['health: outcome promise', g((d) => { d.sections[0].paragraphs[0] += ' This will eliminate the problem.'; }, health)],
     ['health: medical advice', g((d) => { d.sections[0].paragraphs[1] += ' You should stop taking your medication first.'; }, health)],

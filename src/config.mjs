@@ -53,6 +53,7 @@ export function checkConfig(c) {
   need(Array.isArray(c.allowed_link_targets) && c.allowed_link_targets.length > 0, 'allowed_link_targets: at least one origin');
   need(['normal', 'slow', 'off'].includes(c.mode ?? 'normal'), 'mode must be normal | slow | off');
   need(HEALTH_GATES.includes(c.health_gate ?? 'none'), `health_gate must be ${HEALTH_GATES.join(' | ')}`);
+  need(c.gate?.banned_patterns === undefined || (Array.isArray(c.gate.banned_patterns) && c.gate.banned_patterns.every((x) => { try { new RegExp(x, 'i'); return typeof x === 'string'; } catch { return false; } })), 'gate.banned_patterns: a list of valid regular-expression strings');
   need(typeof (c.menu_pages_need_approval ?? false) === 'boolean', 'menu_pages_need_approval must be true or false');
   need(Array.isArray(c.protected_paths ?? []), 'protected_paths must be a list');
   need(c.author === undefined || (c.author && typeof c.author.name === 'string' && c.author.name.trim()), 'author: { name, url? } (a real person shown as the byline)');

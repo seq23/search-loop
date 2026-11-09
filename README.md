@@ -113,6 +113,7 @@ The week report says: `published`, `held_by_cap`, `redirected` (with the existin
 | `menu_pages_need_approval` | no | `true` = never edit menu pages (`menu_pages[]` or the homepage `<nav>` links) |
 | `menu_pages` | no | explicit list of menu routes |
 | `health_gate` | no | `none` (default), `health`, `dental`; with `health.real_facts` `{services[], hours}` |
+| `gate.banned_patterns` | no | regular-expression strings (case-insensitive) a page must never contain in its title, meta or body: the site's own banned claim words, so a page its build would refuse is never committed (v1.9.1) |
 | `protected_paths[]` | no | files/dirs the engine never edits (e.g. a protected sales page) |
 | `shares_audience_with[]` | no | `{site, ledger_url \| ledger_path}` of sibling sites; two sites never target the same search |
 | `local` | no | `{city, neighbourhoods[]}` adds local question sets |

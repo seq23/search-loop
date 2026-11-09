@@ -167,6 +167,14 @@ export function gateReport(page, ctx) {
   if (PERSON_QUOTE.test(prose)) p.push(`invented: a named person or quote "${(prose.match(PERSON_QUOTE) || [])[0].slice(0, 60)}"`);
   if (PLACEHOLDER.test(text)) p.push(`unfinished: placeholder or leaked model text "${(text.match(PLACEHOLDER) || [])[0]}"`);
   if (FILLER.test(text)) notes.push(`filler phrase: "${(text.match(FILLER) || [])[0]}"`);
+  // A site's own banned claim words (config gate.banned_patterns, regex sources, case-insensitive),
+  // checked on the title, meta and body so a page the site's own build would refuse is never
+  // committed (9 Nov 2026: keepmyproof.com got three pages with "proves" / "best" that its build
+  // refused and its validator turned main red on).
+  for (const src of cfg.gate?.banned_patterns || []) {
+    const m = new RegExp(src, 'i').exec(`${title}\n${meta}\n${text}`);
+    if (m) p.push(`banned word for this site: "${m[0]}"`);
+  }
   // Health / dental gate.
   if (cfg.health_gate && cfg.health_gate !== 'none') {
     const allowed = cfg.health?.real_facts || {};
