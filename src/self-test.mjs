@@ -10,6 +10,7 @@ import { nextCap } from './cap.mjs';
 import { sameIntent, intentWords } from './distinct.mjs';
 import { publishedFrozen } from './config.mjs';
 import { decide } from './check.mjs';
+import { cleanDraft } from './build.mjs';
 import { aiEngineFor } from './analytics.mjs';
 import { NamedStop, EXIT } from './util.mjs';
 
@@ -96,6 +97,10 @@ export function fitCases() {
     ['long title lead is cut to 65', () => { const d = fixtureDraft(); d.title_lead = 'How to plan your week as a founder when everything is on fire and nothing works'; const t = titleOf(d); return t.length <= LIMITS.title[1] && named(t) === 1 && t.startsWith('How to plan your week'); }],
     ['site name in the lead appears once', () => { const d = fixtureDraft(); d.title_lead = 'Example Planner: how to plan your week'; return named(titleOf(d)) === 1; }],
     ['short lead falls back to the H1', () => { const d = fixtureDraft(); d.title_lead = 'Plan'; return titleOf(d).length >= LIMITS.title[0]; }],
+    // v1.9.2 (porchandparty901.com, 9 Nov 2026): the writer turns the two leads free models give that define
+    // nothing into "X is ...", so the rendered answer under the H1 passes page-shape b4.
+    ['a lead that defines nothing is written "X is ..."', () => ['To set up a hotel room for a romantic night, check in early, clear the surfaces and dim the lights.', 'Party rentals Memphis services include party game rentals, celebration setups and grazing tables.']
+      .every((a) => { const h = render(cfg, { slug: 'x', draft: cleanDraft({ ...fixtureDraft(), direct_answer: a }), published: TODAY }); return /\b(is|are)\b/.test(stripTags(h.match(/<\/h1>[\s\S]*?<p[\s>][\s\S]*?<\/p>/)[0].split(/<\/h1>/)[1])); })],
     ['long meta cut to 160', () => { const d = fixtureDraft(); d.meta_description += ' ' + d.meta_description; return metaOf(d).length <= LIMITS.meta[1]; }],
   ];
 }

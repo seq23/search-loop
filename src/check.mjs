@@ -12,7 +12,7 @@ import { render, withoutRelatedLink } from './render.mjs';
 import { gate } from './gate.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
 import { buildIndex } from './site-index.mjs';
-import { verifyFacts, capRepeats, shapeGaps } from './build.mjs';
+import { verifyFacts, capRepeats, shapeGaps, defineLead } from './build.mjs';
 import { publishedFrozen } from './config.mjs';
 import { learnWeights } from './compete.mjs';
 
@@ -187,7 +187,7 @@ function undo(cfg, L, p, today, snap) {
   p.strengthen.verdict = { at: today, undone: true, position: snap.position, reason: `position ${snap.position} is worse than ${p.strengthen.baseline_position} by more than ${UNDO_IF_WORSE_BY}` };
 }
 
-export const RESHAPE_VERSION = 1;
+export const RESHAPE_VERSION = 2; // v1.9.2: the b4 lead gap (an answer that defines nothing)
 
 // Kept only if the re-render passes the gate with every gap gone; the old page is snapshotted.
 // A page that cannot be cleared this way is recorded under RESHAPE_VERSION with what is left, and
@@ -201,20 +201,41 @@ export function reshape(cfg, L, p, { today, index = [], notes = [] }) {
   const gaps = shapeGaps(before, p.query);
   if (!Object.keys(gaps).length) return false;
   const left = (why) => { p.reshaped = { v: RESHAPE_VERSION, at: today, fixed: [], left: why }; notes.push(`reshape of ${p.route} left as it was: ${why.slice(0, 2).join('; ')}`); return false; };
-  if (!fs.existsSync(draftFile)) return left([...Object.values(gaps), 'no saved draft to re-render']);
-  const next = capRepeats(JSON.parse(fs.readFileSync(draftFile, 'utf8')));
-  const relatedLinks = [...before.matchAll(/data-search-loop="related"[\s\S]*?<\/section>/g)].flatMap((m) => [...m[0].matchAll(/href="([^"]+)">([^<]+)</g)].map((x) => ({ route: x[1], anchor: x[2] })));
-  const html = render(cfg, { slug: p.slug, draft: next, related: relatedLinks, published: p.published_at, modified: today });
-  const problems = [...gate({ query: p.query, html, facts: next.facts || [] }, { cfg, corpus: index, selfRoute: p.route }), ...Object.values(shapeGaps(html, p.query))];
+  const saved = fs.existsSync(draftFile) ? JSON.parse(fs.readFileSync(draftFile, 'utf8')) : null;
+  const gateOf = (h, facts) => gate({ query: p.query, html: h, facts }, { cfg, corpus: index, selfRoute: p.route });
+  let html; let next; let problems;
+  if (Object.keys(gaps).join() === 'lead') {
+    // v1.9.2: only the lead defines nothing. The live page may have been edited after its draft was
+    // saved (p-n-p #203/#206), so the lead paragraph is rewritten in place, never re-rendered; kept
+    // only if the page is no worse at the gate than it is now.
+    const m = before.match(/<p class="direct-answer">([\s\S]*?)<\/p>/i);
+    const lead = defineLead({ direct_answer: m[1] }).direct_answer;
+    if (lead === m[1]) return left([gaps.lead, 'the writer cannot rewrite this lead in place; it changes when the page is strengthened']);
+    html = before.replace(m[0], `<p class="direct-answer">${lead}</p>`);
+    next = saved && defineLead(saved);
+    const facts = saved?.facts || [];
+    const was = new Set(gateOf(before, facts));
+    problems = [...gateOf(html, facts).filter((x) => !was.has(x)), ...Object.values(shapeGaps(html, p.query))];
+  } else {
+    if (!saved) return left([...Object.values(gaps), 'no saved draft to re-render']);
+    next = defineLead(capRepeats(saved));
+    const relatedLinks = [...before.matchAll(/data-search-loop="related"[\s\S]*?<\/section>/g)].flatMap((m) => [...m[0].matchAll(/href="([^"]+)">([^<]+)</g)].map((x) => ({ route: x[1], anchor: x[2] })));
+    html = render(cfg, { slug: p.slug, draft: next, related: relatedLinks, published: p.published_at, modified: today });
+    const after = shapeGaps(html, p.query);
+    // A lead the writer cannot rewrite never blocks the other fixes; it was already there and is no worse.
+    const stillOk = (k) => k === 'lead' && gaps.lead && Object.keys(gaps).some((g) => g !== 'lead' && !after[g]);
+    problems = [...gateOf(html, next.facts || []), ...Object.entries(after).filter(([k]) => !stillOk(k)).map(([, v]) => v)];
+  }
   if (problems.length) return left(problems);
+  const after = shapeGaps(html, p.query);
   const bh = sha256(before);
   fs.mkdirSync(path.dirname(L.snapshotPath(bh)), { recursive: true });
   fs.writeFileSync(L.snapshotPath(bh), before);
   fs.writeFileSync(file, html);
-  fs.writeFileSync(draftFile, JSON.stringify(next, null, 2) + '\n');
+  if (next) fs.writeFileSync(draftFile, JSON.stringify(next, null, 2) + '\n');
   p.hash = sha256(html);
-  p.reshaped = { v: RESHAPE_VERSION, at: today, fixed: Object.keys(gaps), before_hash: bh, after_hash: p.hash };
-  notes.push(`reshape: ${p.route} re-rendered (${Object.keys(gaps).join(', ')})`);
+  p.reshaped = { v: RESHAPE_VERSION, at: today, fixed: Object.keys(gaps).filter((k) => !after[k]), before_hash: bh, after_hash: p.hash };
+  notes.push(`reshape: ${p.route} re-rendered (${p.reshaped.fixed.join(', ')})`);
   return true;
 }
 
