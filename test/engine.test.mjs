@@ -831,3 +831,35 @@ test('CHECK reshape: a live page with filler is re-rendered from its draft and s
   assert.equal(r2.did.check.reshaped, undefined);
   assert.equal(fs.readFileSync(path.join(root, a.rel), 'utf8'), nowA);
 });
+
+test('f9 action (v1.9.3): a live page built before the site changed its one action ends in the new one after CHECK, in slow mode too; frozen sites are left alone', async () => {
+  const root = site();
+  await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: distinctChat() });
+  const L = path.join(root, 'data/search-loop/pages.json');
+  const live = JSON.parse(fs.readFileSync(L)).pages.filter((x) => x.status === 'live');
+  assert.ok(live.length, 'a live page to work with');
+  const cfgFile = path.join(root, 'search-loop.config.json');
+  const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+  const oldUrl = cfg.action.url;
+  cfg.action = { label: 'Open the free planner', url: `${cfg.base_url}/free-planner` };
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+  for (const p of live) assert.ok(fs.readFileSync(path.join(root, p.rel), 'utf8').match(/<p class="site-action">[\s\S]*?<\/p>/)[0].includes(oldUrl), 'page ends in the old action');
+  const day2 = new Date(NOW.getTime() + 7 * 86400000); // slow mode checks weekly
+  const r = await run({ root, now: day2, 'global-mode': 'slow', fetchImpl: fakeFetch(), chat: distinctChat(), stage: 'check' });
+  assert.equal(r.did.check.action_refreshed, live.length, r.report?.notes?.join(' | '));
+  for (const p of live) {
+    const h = fs.readFileSync(path.join(root, p.rel), 'utf8');
+    assert.ok(h.includes(`href="${cfg.base_url}/free-planner">Open the free planner</a>`), 'page ends in the new action');
+    assert.ok(!h.match(/<p class="site-action">[\s\S]*?<\/p>/)[0].includes(oldUrl), 'old action gone from the action line');
+  }
+  const pa = JSON.parse(fs.readFileSync(L)).pages.find((x) => x.slug === live[0].slug);
+  assert.ok(fs.existsSync(path.join(root, 'data/search-loop/snapshots', `${pa.action_refreshed.before_hash}.html`)), 'old page snapshotted');
+  // Frozen site: nothing published changes.
+  cfg.action = { label: 'Third action', url: `${cfg.base_url}/third` };
+  cfg.published_pages_frozen = true;
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+  const before = fs.readFileSync(path.join(root, live[0].rel), 'utf8');
+  const r2 = await run({ root, now: new Date(day2.getTime() + 7 * 86400000), 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: distinctChat(), stage: 'check' });
+  assert.equal(r2.did.check.action_refreshed, undefined);
+  assert.equal(fs.readFileSync(path.join(root, live[0].rel), 'utf8'), before);
+});

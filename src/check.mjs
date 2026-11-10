@@ -8,7 +8,7 @@ import { ledger } from './ledger.mjs';
 import { searchAnalytics, inspectUrl, dateDaysAgo } from './gsc.mjs';
 import { cloudflareDay } from './analytics.mjs';
 import { centralDate, isoWeek, daysBetween, sha256, fetchText, tokenOverlap, pastSoft, progress } from './util.mjs';
-import { render, withoutRelatedLink } from './render.mjs';
+import { render, withoutRelatedLink, actionLine } from './render.mjs';
 import { gate } from './gate.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
 import { buildIndex } from './site-index.mjs';
@@ -142,6 +142,9 @@ export async function check(cfg, { rules: modeRules, mode, now = new Date(), fet
   const consolidation = L.read('consolidation', { schema: 'search-loop-consolidation-v1', merges: [] });
   // v1.9.0: live pages built before v1.7.1 (a how-to with no numbered steps, template filler) are
   // re-rendered once from their saved draft through today's write path (capRepeats + render). No model call.
+  // v1.9.3: a page built before the site changed its one action still ends in the old one (f9).
+  // The action line is swapped in place on every live page; not on a site whose pages are frozen.
+  if (!frozen) for (const p of live) if (refreshAction(cfg, L, p, { today, notes })) res.action_refreshed = (res.action_refreshed || 0) + 1;
   if (rules.strengthen) for (const p of live) if (reshape(cfg, L, p, { today, index, notes })) res.reshaped = (res.reshaped || 0) + 1;
   for (const p of live) {
     const due = dueCheckpoints(p, today);
@@ -185,6 +188,26 @@ function undo(cfg, L, p, today, snap) {
   const snapFile = L.snapshotPath(p.strengthen.before_hash);
   if (fs.existsSync(snapFile)) fs.writeFileSync(path.join(cfg.root, p.rel), fs.readFileSync(snapFile));
   p.strengthen.verdict = { at: today, undone: true, position: snap.position, reason: `position ${snap.position} is worse than ${p.strengthen.baseline_position} by more than ${UNDO_IF_WORSE_BY}` };
+}
+
+// The old page is snapshotted; dates are left alone (the page's words did not change).
+export function refreshAction(cfg, L, p, { today, notes = [] }) {
+  if (!cfg.action?.url) return false;
+  const file = path.join(cfg.root, p.rel);
+  if (!fs.existsSync(file)) return false;
+  const before = fs.readFileSync(file, 'utf8');
+  const cur = before.match(/<p class="site-action">[\s\S]*?<\/p>/i);
+  const want = actionLine(cfg);
+  if (!cur || cur[0] === want) return false;
+  const html = before.replace(cur[0], want);
+  const bh = sha256(before);
+  fs.mkdirSync(path.dirname(L.snapshotPath(bh)), { recursive: true });
+  fs.writeFileSync(L.snapshotPath(bh), before);
+  fs.writeFileSync(file, html);
+  p.hash = sha256(html);
+  p.action_refreshed = { at: today, before_hash: bh, after_hash: p.hash };
+  notes.push(`action: ${p.route} now ends in the site's one action (${cfg.action.url})`);
+  return true;
 }
 
 export const RESHAPE_VERSION = 2; // v1.9.2: the b4 lead gap (an answer that defines nothing)
