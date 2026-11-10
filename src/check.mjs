@@ -15,6 +15,7 @@ import { buildIndex } from './site-index.mjs';
 import { verifyFacts, capRepeats, shapeGaps, defineLead } from './build.mjs';
 import { publishedFrozen } from './config.mjs';
 import { learnWeights } from './compete.mjs';
+import { refreshPages } from './refresh.mjs';
 
 export const CHECKPOINTS = [['w2', 14], ['w4', 28], ['w8', 56], ['d90', 90]];
 export const NEAR_PAGE_ONE = [10.5, 20];
@@ -167,6 +168,9 @@ export async function check(cfg, { rules: modeRules, mode, now = new Date(), fet
       }
     }
   }
+  // v1.10.0 REFRESH: due pages get their sources re-checked and one real-search question; a date
+  // moves only with a change (risk rule R-ADV-12). Never on a frozen site.
+  if (!frozen) res.refresh = await refreshPages(cfg, L, live.filter((p) => p.status === 'live'), { today, now, rules, chat, fetchImpl, index, notes });
   // Learning, weekly per site: can-be-#1 weights move with each signal's top-3 hit rate.
   const lw = L.read('lane_weights', null);
   const learned = learnWeights(book.pages, lw, { week: isoWeek(now) });
@@ -183,7 +187,7 @@ export async function check(cfg, { rules: modeRules, mode, now = new Date(), fet
 
 function undo(cfg, L, p, today, snap) {
   const snapFile = L.snapshotPath(p.strengthen.before_hash);
-  if (fs.existsSync(snapFile)) fs.writeFileSync(path.join(cfg.root, p.rel), fs.readFileSync(snapFile));
+  if (fs.existsSync(snapFile)) { fs.writeFileSync(path.join(cfg.root, p.rel), fs.readFileSync(snapFile)); p.modified_at = today; }
   p.strengthen.verdict = { at: today, undone: true, position: snap.position, reason: `position ${snap.position} is worse than ${p.strengthen.baseline_position} by more than ${UNDO_IF_WORSE_BY}` };
 }
 
@@ -234,6 +238,7 @@ export function reshape(cfg, L, p, { today, index = [], notes = [] }) {
   fs.writeFileSync(file, html);
   if (next) fs.writeFileSync(draftFile, JSON.stringify(next, null, 2) + '\n');
   p.hash = sha256(html);
+  p.modified_at = today;
   p.reshaped = { v: RESHAPE_VERSION, at: today, fixed: Object.keys(gaps).filter((k) => !after[k]), before_hash: bh, after_hash: p.hash };
   notes.push(`reshape: ${p.route} re-rendered (${p.reshaped.fixed.join(', ')})`);
   return true;
@@ -265,6 +270,7 @@ async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, note
   fs.writeFileSync(L.snapshotPath(bh), before);
   fs.writeFileSync(file, html);
   fs.writeFileSync(draftFile, JSON.stringify(next, null, 2) + '\n');
+  p.modified_at = today;
   p.strengthen = { at: today, before_hash: bh, after_hash: sha256(html), baseline_position: snap.position, queries };
   return true;
 }
