@@ -48,6 +48,16 @@ Every site shares the same free capacity, so the engine spreads the load over th
 - When every lane is out: the run drops to `slow` for the day (`NAMED NOTE [FREE_MODEL_RATE_LIMITED]`), the search stays queued for the next run (never dropped), and the report names each closed lane. If BUILD then published nothing, the run writes **`NAMED NOTE [NO_FREE_MODEL]`** (job summary and the weekly report's notes; exit 0, because the next run retries the queued searches — never a red run) and counts the streak in `runs.json` (`no_free_model`); the note names it ("run N in a row since …"). Any run whose lanes answer ends the streak. Only a site with no model credential at all and nothing else done exits red (`NAMED STOP [FREE_MODEL_KEY]`, exit 3): retrying cannot fix a missing key.
 - **Stagger:** a scheduled run waits a fixed, site-specific 0–39 minutes (hash of `site`) before starting, so sites do not hit the shared lanes together; also give each caller its own cron minute. `llm.stagger: false` turns it off; dispatched runs never wait.
 
+## Refresh: real freshness, never a fake date (v1.10.0)
+
+Owner goal, 10 Nov 2026, and risk rule R-ADV-12 (FTC Act s5, no fake freshness): every live question page is re-checked every 30-90 days at $0, and its "Updated" date and lastmod move **only** when what the page says changed. Code: `src/refresh.mjs`, run inside CHECK (never on a frozen site, never on a page mid-strengthen).
+
+- **Pace**: `ceil(live / 45)` pages a run, at most 3, oldest first; a page checked or changed in the last 30 days is not due.
+- **Sources re-checked and fixed**: every fact's source is fetched again (two tries); a source that is gone (404, 410, unreachable) takes its fact off the page. A 403 or 5xx is "could not tell" and stays. If the fix would leave the page short of the gate's sources, the page is left as it was and `refreshed.left` says why.
+- **One real-search question** (normal mode only; slow and off still repair sources): a Search Console query for that page (28 days) that no heading or FAQ on it answers becomes one FAQ entry, written by a free model from the page's own words; a new number, name or link refuses it. The page must pass the gate with no new problem.
+- **Dates**: a changed page is re-rendered with `modified: today`, snapshotted, and its `pages.json` entry gets `modified_at` (also set now by strengthen, undo and reshape). A page with nothing to fix gets `refreshed: { at, changes: [] }` and keeps its file, hash and dates. **Sites date engine pages from `modified_at || published_at`**, never from a check or verdict date.
+- **Census**: `refreshed=<changed>/<due>` on the run line; due pages and nothing changed is `NAMED NOTE [REFRESH_NOTHING_CHANGED]`.
+
 ## Old pages reshaped, the voice line never copied, releases tag themselves (v1.9.0)
 
 Search Readiness q1 (7 Nov 2026) sampled porchandparty901.com question pages with the site's `voice` sentence repeated 5-11 times and a how-to with no numbered steps. v1.7.1 fixed new pages at write time (`capRepeats`, how-to bullets as `<ol>`); v1.9.0 finishes the job:
