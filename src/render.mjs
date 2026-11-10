@@ -77,6 +77,12 @@ export function publisherNode(cfg) {
 }
 
 // draft: { h1, title_lead, meta_description, direct_answer, sections[{heading, paragraphs[], bullets?[]}], faq[{q,a}], facts[{claim, source_url, source_name, verified}] }
+// v1.9.3: the site's one action, as every page ends. CHECK swaps it into live pages when the
+// config's action changes (f9: weddingchecklistpdf.com kept the old $9 link after 7 Nov 2026).
+export function actionLine(cfg) {
+  return `<p class="site-action"><a class="button" href="${esc(cfg.action.url)}">${esc(cfg.action.label)}</a></p>`;
+}
+
 export function render(cfg, { slug, draft, related = [], published, modified }) {
   const url = pageUrl(cfg, slug);
   const title = fitTitle(cfg, draft);
@@ -110,7 +116,7 @@ export function render(cfg, { slug, draft, related = [], published, modified }) 
     facts.length ? `<section data-search-loop="facts"><h2>What the sources say</h2><ul>${facts.map((f) => `<li>${esc(f.claim)} (<a href="${esc(f.source_url)}" rel="noopener">${esc(f.source_name || new URL(f.source_url).hostname)}</a>)</li>`).join('')}</ul></section>` : '',
     `<section class="faq"><h2>Frequently asked questions</h2>${draft.faq.map((f) => `<h3>${esc(f.q)}</h3><p>${esc(f.a)}</p>`).join('')}</section>`,
     related.length ? `<section data-search-loop="related"><h2>Related questions</h2><ul>${related.map((r) => `<li><a href="${esc(r.route)}">${esc(r.anchor)}</a></li>`).join('')}</ul></section>` : '',
-    `<p class="site-action"><a class="button" href="${esc(actionHref)}">${esc(cfg.action.label)}</a></p>`,
+    actionLine(cfg),
   ].join('\n');
   return `<!DOCTYPE html>
 <html lang="en"><head>
