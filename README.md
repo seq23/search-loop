@@ -48,6 +48,14 @@ Every site shares the same free capacity, so the engine spreads the load over th
 - When every lane is out: the run drops to `slow` for the day (`NAMED NOTE [FREE_MODEL_RATE_LIMITED]`), the search stays queued for the next run (never dropped), and the report names each closed lane. If BUILD then published nothing, the run writes **`NAMED NOTE [NO_FREE_MODEL]`** (job summary and the weekly report's notes; exit 0, because the next run retries the queued searches — never a red run) and counts the streak in `runs.json` (`no_free_model`); the note names it ("run N in a row since …"). Any run whose lanes answer ends the streak. Only a site with no model credential at all and nothing else done exits red (`NAMED STOP [FREE_MODEL_KEY]`, exit 3): retrying cannot fix a missing key.
 - **Stagger:** a scheduled run waits a fixed, site-specific 0–39 minutes (hash of `site`) before starting, so sites do not hit the shared lanes together; also give each caller its own cron minute. `llm.stagger: false` turns it off; dispatched runs never wait.
 
+## Which searches FIND asks about, and priority topics (v1.11.0)
+
+The weekly autocomplete budget (`find.max_autocomplete_calls`, 80 = 40 questions to Google and Bing each) is spent in this order: the site's priority topics, easy wins, the other `topics`, winners, the top Search Console queries; every seed is asked bare before any seed gets a question prefix ("how to …"). Before v1.11.0 the Search Console queries went first with all six prefixes, so six of them used the whole budget and a site's `topics` were never asked. `discovery-receipt.json` `seeds` says how many topics were asked; a topic the budget never reached is `NAMED NOTE [FIND_TOPICS_UNASKED]`.
+
+`find.priority_topics: N` makes the first N `topics` the site's priority searches (its buyers' searches). A search carrying more than half of one's words (both words of a two-word topic) is marked `priority` in `targets.json`, goes to the relevance screen first (the best 75) and is built before any other search in either lane, still under the cap, the distinct gate and the page gate. No priority search found in a week is `NAMED NOTE [FIND_PRIORITY_EMPTY]`.
+
+A draft with fewer than two working sources is told which URL failed and how (`HTTP 403: this site refuses automated checks, so cite a different publisher`), so the fix pass replaces it instead of citing it again (v1.11.0; ftc.gov and annualcreditreport.com refuse every automated check).
+
 ## Refresh: real freshness, never a fake date (v1.10.0)
 
 Owner goal, 10 Nov 2026, and risk rule R-ADV-12 (FTC Act s5, no fake freshness): every live question page is re-checked every 30-90 days at $0, and its "Updated" date and lastmod move **only** when what the page says changed. Code: `src/refresh.mjs`, run inside CHECK (never on a frozen site, never on a page mid-strengthen).
@@ -132,7 +140,7 @@ The week report says: `published`, `held_by_cap`, `redirected` (with the existin
 | `template` | no | `stylesheets[]`, `og_image{url,width,height}`, `header_html`, `footer_html`, `section_name` |
 | `related` | no | `max_pages_per_new_page` (2), `scan_dirs[]`, `skip_dirs[]` |
 | `competition` | no | `lanes` `{can_be_one: 2, striking: 1}`, `top10` `{provider: brave\|none, daily_budget: 15, monthly_budget: 50}` (can lower, never raise past the fleet ceiling), `min_can_be_one` 15 |
-| `find` | no | `gsc_position_min` 8, `gsc_position_max` 30, `max_autocomplete_calls` 80, `max_targets` 200, `exclude_words[]` |
+| `find` | no | `gsc_position_min` 8, `gsc_position_max` 30, `max_autocomplete_calls` 80, `max_targets` 200, `exclude_words[]`, `priority_topics` 0 (how many of the first `topics` are the site's priority searches: asked, screened and built before any other, v1.11.0) |
 | `gsc` | no | `site_url` or `site_url_env` (default env `GSC_SITE_URL`) |
 | `llm.routing_file` | no | the site's own $0 routing file (OpenRouter `:free` models); default [`config/free-models.json`](config/free-models.json) |
 | `indexnow` | no | `{key, key_location}` — the key the site already serves |

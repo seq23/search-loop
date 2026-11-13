@@ -147,7 +147,15 @@ export function gateReport(page, ctx) {
   // Page shape (v1.5.0): at least 2 distinct sources that answered 200, and at least one list or
   // table in the body itself (the sources and related blocks do not count).
   const distinctSources = new Set(verifiedFacts.map((f) => f.source_url.replace(/[#?].*$/, '').replace(/\/$/, '')));
-  if (distinctSources.size < 2) p.push(`facts: needs at least 2 distinct sources whose URLs answered 200 (found ${distinctSources.size})`);
+  if (distinctSources.size < 2) {
+    // v1.11.0: the fix pass is told WHICH source failed and how. "found 1" alone left the model
+    // re-citing the same page: consumer.ftc.gov, ftc.gov and annualcreditreport.com answer 403 to
+    // every automated check, so a credit page citing the FTC failed all three attempts
+    // (approvalprep.com, 9-13 Nov 2026: 9 of 14 drops).
+    const failed = (page.facts || []).filter((f) => f.verified === false && f.source_url).slice(0, 4)
+      .map((f) => `${f.source_url} (${[401, 403].includes(f.checked_status) ? `HTTP ${f.checked_status}: this site refuses automated checks, so cite a different publisher` : f.checked_status ? `HTTP ${f.checked_status}` : 'no answer'})`);
+    p.push(`facts: needs at least 2 distinct sources whose URLs answered 200 (found ${distinctSources.size})${failed.length ? `; these failed the check, replace each with a page that exists: ${failed.join('; ')}` : ''}`);
+  }
   const bodySections = [...main.matchAll(/<section(?![^>]*data-search-loop=)(?![^>]*class=["']faq)[^>]*>([\s\S]*?)<\/section>/gi)].map((m) => m[1]).join(' ');
   if (!/<(ul|ol|table)\b/i.test(bodySections)) p.push('shape: the body needs at least one list or table (give one section "bullets")');
   // Only the sourced-facts block may carry numbers or named sources; and only

@@ -48,6 +48,37 @@ export function scoreCandidate(s) {
   return Math.round(score * 10) / 10;
 }
 
+// The site's priority searches (v1.11.0): the first `find.priority_topics` entries of `topics`.
+// They are asked about first, screened first and built first (build.mjs), so a site that puts
+// its buyers' searches at the top of `topics` and says how many gets pages for those first.
+export const priorityTopics = (cfg) => cfg.topics.slice(0, Math.max(0, Math.min(cfg.topics.length, Number(cfg.find?.priority_topics) || 0))).map(norm).filter(Boolean);
+// The priority topic a search belongs to: it carries more than half of that topic's words
+// (both words of a two-word topic). Where the search came from does not matter, so an
+// autocomplete answer that drifted off the topic ("debt service cost") is not priority.
+export function priorityTopic(q, cfg) {
+  const words = new Set(contentWords(q).map(stem));
+  return priorityTopics(cfg).find((t) => { const w = [...new Set(contentWords(t).map(stem))]; return w.length > 0 && w.filter((x) => words.has(x)).length > w.length / 2; }) || null;
+}
+
+// What the weekly autocomplete budget is spent on, in order (v1.11.0). Every seed is asked
+// bare before any seed gets a question prefix, and the site's own topics come before the
+// queries Search Console already shows. Before this the measured queries went first with all
+// six prefixes each, so six of them used the whole default budget (80 calls = 40 questions)
+// and no config topic was ever asked (approvalprep.com and weddingchecklistpdf.com, W46 2026:
+// 0 of 30 and 0 of 16 topics asked; a re-ordered `topics` list changed nothing).
+export function expansionPlan(cfg, { wins = [], winners = [], measured = [], places = [] } = {}) {
+  const pri = priorityTopics(cfg);
+  const topics = cfg.topics.map(norm).filter(Boolean);
+  const seeds = [];
+  const seen = new Set();
+  const push = (list, kind) => { for (const q of list.map(norm)) if (q && !seen.has(q)) { seen.add(q); seeds.push({ seed: q, kind, priority: pri.includes(q) ? q : null }); } };
+  push(pri, 'topic'); push(wins, 'easy_win'); push(topics, 'topic'); push(winners, 'winner'); push(measured, 'measured');
+  push(cfg.topics.flatMap((t) => places.map((p) => `${t} ${p}`)), 'local');
+  const plan = seeds.map((s) => ({ q: s.seed, ...s, bare: true }));
+  for (const p of QUESTION_PREFIXES) for (const s of seeds) if (!isQuestion(s.seed)) plan.push({ q: `${p} ${s.seed}`, ...s, bare: false });
+  return plan;
+}
+
 export const isQuestion = (q) => /^(how|what|why|when|where|which|who|can|should|is|are|do|does|will)\b/.test(norm(q));
 
 // Lexical floor: the suggestion carries every word of one topic seed, or two
@@ -147,6 +178,7 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
     // the variant with the stronger measured signal names the page
     if (sig.gsc_position && !cur.signals.gsc_position) cur.query = n;
     Object.assign(cur.signals, sig);
+    cur.priority ||= priorityTopic(n, cfg) || undefined;
     cands.set(k, cur);
   };
 
@@ -189,21 +221,28 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
   const winners = L.read('winners', { topics: [] }).topics || [];
   const topMeasured = [...measured].sort((a, b) => b.impressions - a.impressions).map((m) => m.query).filter((q, i, a) => a.indexOf(q) === i).slice(0, 12);
   const places = cfg.local ? [cfg.local.city, ...(cfg.local.neighbourhoods || [])] : [];
-  const seeds = [...new Set([...wins.map((w) => w.query), ...winners, ...topMeasured, ...cfg.topics, ...cfg.topics.flatMap((t) => places.map((p) => `${t} ${p}`))].map(norm))].filter(Boolean);
-  const expansions = [];
-  for (const s of seeds) { expansions.push(s); if (!isQuestion(s)) for (const p of QUESTION_PREFIXES) expansions.push(`${p} ${s}`); }
+  const plan = expansionPlan(cfg, { wins: wins.map((w) => w.query), winners, measured: topMeasured, places });
   const budget = { left: cfg.find.max_autocomplete_calls };
   progress('find', 'autocomplete expansions');
   const g = suggester('suggestqueries.google.com', (q) => `https://suggestqueries.google.com/complete/search?client=firefox&hl=en&q=${encodeURIComponent(q)}`, receipt, fetchImpl, budget);
   const b = suggester('api.bing.com', (q) => `https://api.bing.com/osjson.aspx?query=${encodeURIComponent(q)}`, receipt, fetchImpl, budget);
-  for (const q of expansions) {
+  const askedSeeds = new Set();
+  let asked = 0;
+  for (const e of plan) {
     if (budget.left <= 0) break;
-    const isLocal = places.some((p) => q.includes(norm(p)));
-    const [gl, bl] = [await g(q), await b(q)];
+    const isLocal = places.some((p) => e.q.includes(norm(p)));
+    const [gl, bl] = [await g(e.q), await b(e.q)];
+    if (gl || bl) { asked++; askedSeeds.add(e.seed); }
     for (const s of gl || []) if (relevant(s, cfg)) add(s, { google_suggest: true, ...(isLocal ? { local: true } : {}) });
     for (const s of bl || []) if (relevant(s, cfg)) add(s, { bing_suggest: true, ...(isLocal ? { local: true } : {}) });
   }
-  if (budget.left <= 0) receipt.notes = [`autocomplete stopped at its budget of ${cfg.find.max_autocomplete_calls} calls`];
+  const topicSeeds = [...new Set(cfg.topics.map(norm).filter(Boolean))];
+  const unasked = topicSeeds.filter((t) => !askedSeeds.has(t));
+  receipt.seeds = { planned: plan.length, asked, topics: topicSeeds.length, topics_asked: topicSeeds.length - unasked.length, priority_topics: priorityTopics(cfg).length };
+  receipt.notes = [];
+  // Rule 0: a topic the budget never reached is named, never silently skipped.
+  if (budget.left <= 0 && unasked.length) receipt.notes.push(`NAMED NOTE [FIND_TOPICS_UNASKED] autocomplete stopped at its budget of ${cfg.find.max_autocomplete_calls} calls before ${unasked.length} of ${topicSeeds.length} topic seed(s) were asked (first: "${unasked[0]}"); raise find.max_autocomplete_calls or trim topics`);
+  if (budget.left <= 0) receipt.notes.push(`autocomplete stopped at its budget of ${cfg.find.max_autocomplete_calls} calls (${asked} of ${plan.length} planned questions asked)`);
 
   // 4. Drop what the site already answers (those are strengthen candidates),
   //    and what a sibling with the same audience already holds.
@@ -231,7 +270,7 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
   // the screen sees the best of both lanes
   const byOne = [...targets].sort((a, b) => b.scores.can_be_one - a.scores.can_be_one);
   targets.sort((a, b) => b.score - a.score);
-  const pool = [...new Set([...byOne.slice(0, 75).filter((t) => t.scores.can_be_one > 0), ...targets])].slice(0, 150);
+  const pool = [...new Set([...targets.filter((t) => t.priority).slice(0, 75), ...byOne.slice(0, 75).filter((t) => t.scores.can_be_one > 0), ...targets])].slice(0, 150);
   const screen = pool.length ? await relevanceScreen(cfg, pool, { chat, fetchImpl }) : { keep: new Set() };
   let screened = targets;
   if (screen.notRead) receipt.sources.relevance_screen = `not read: ${screen.notRead} (lexical floor only)`;
@@ -253,13 +292,20 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
       t.score = t.scores.striking;
       t.reasons = [t.signals.gsc_position ? `already ranks ${t.signals.gsc_position} in Search Console (${t.signals.gsc_impressions} impressions)` : 'autocomplete demand (google/bing)', ...(one.score >= minOne ? [`can-be-#1 score ${one.score} too (taken by the striking lane's turn)`] : one.reasons.length ? [`can-be-#1 evidence too thin (${one.score} < ${minOne})`] : [])];
     }
+    if (t.priority) t.reasons = [`priority topic "${t.priority}" (find.priority_topics): built before other searches`, ...t.reasons];
     if (!t.signals.top10) t.signals.top10 = receipt.sources.top10?.startsWith('not read') ? receipt.sources.top10 : 'not read: outside this run\'s top-10 budget';
   }
   strengthen.sort((a, b) => b.score - a.score);
+  // Priority searches lead the list (and survive the max_targets cut); BUILD takes them first.
+  screened = [...screened.filter((t) => t.priority), ...screened.filter((t) => !t.priority)];
+  const nPri = receipt.seeds.priority_topics;
+  receipt.seeds.priority_targets = screened.filter((t) => t.priority).length;
+  if (nPri && !receipt.seeds.priority_targets) receipt.notes.push(`NAMED NOTE [FIND_PRIORITY_EMPTY] the site's ${nPri} priority topic(s) produced no new search this week (${[...cands.values()].filter((c) => c.priority).length} candidate(s) before the site-coverage check and the relevance screen); the other topics still build`);
+  if (!receipt.notes.length) delete receipt.notes;
   receipt.lanes = { ratio: laneRatio(cfg), can_be_one: screened.filter((t) => t.lane === 'can_be_one').length, striking: screened.filter((t) => t.lane === 'striking').length, weights };
   receipt.counts = { candidates: cands.size, targets: screened.length, strengthen_candidates: strengthen.length, dropped_shared_audience: droppedShared };
   const out = { schema: 'search-loop-targets-v1', site: cfg.site, week: receipt.week, generated_at: receipt.generated_at, sources: receipt.sources, targets: screened.slice(0, cfg.find.max_targets), strengthen: strengthen.slice(0, 50) };
   L.write('targets', out);
   L.write('receipt', receipt);
-  return { targets: out.targets.length, strengthen: out.strengthen.length, sources: receipt.sources, receipt };
+  return { targets: out.targets.length, strengthen: out.strengthen.length, priority: receipt.seeds.priority_targets, sources: receipt.sources, notes: (receipt.notes || []).filter((n) => n.startsWith('NAMED ')), receipt };
 }

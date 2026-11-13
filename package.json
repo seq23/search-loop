@@ -1,6 +1,6 @@
 {
   "name": "search-loop",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "One shared search growth engine for every selling site: find easy searches, publish a page a search, check at 2/4/8 weeks, strengthen, undo or merge, report weekly.",
   "type": "module",
   "license": "MIT",

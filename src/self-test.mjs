@@ -52,6 +52,7 @@ export function cases() {
     ['health: outcome promise', g((d) => { d.sections[0].paragraphs[0] += ' This will eliminate the problem.'; }, health)],
     ['health: medical advice', g((d) => { d.sections[0].paragraphs[1] += ' You should stop taking your medication first.'; }, health)],
     ['health: invented hours', g((d) => { d.sections[1].paragraphs[1] += ' We are open until 9pm with walk-ins welcome.'; }, health)],
+    ['config: more priority topics than topics', () => checkConfig({ ...FIXTURE_CONFIG_RAW, find: { priority_topics: 9 } })],
     ['config: no action', () => checkConfig({ ...FIXTURE_CONFIG_RAW, action: undefined })],
     ['config: output inside protected path', () => checkConfig({ ...FIXTURE_CONFIG_RAW, protected_paths: ['questions'] })],
     ['config: per-day run guard over 30', () => checkConfig({ ...FIXTURE_CONFIG_RAW, cap: { max_per_day: 40 } })],

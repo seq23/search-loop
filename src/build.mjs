@@ -282,7 +282,10 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
   // when some searches are skipped or dropped.
   const laneMade = { can_be_one: 0, striking: 0 };
   for (const p of book.pages) if (p.lane && p.status !== 'declined') laneMade[p.lane] = (laneMade[p.lane] || 0) + 1;
-  const lanes = laneQueue(queue, laneRatio(cfg), laneMade);
+  // Priority searches (find.priority_topics, v1.11.0) are taken before any other, in either lane.
+  const lanesFirst = laneQueue(queue.filter((t) => t.priority), laneRatio(cfg), laneMade);
+  const lanesRest = laneQueue(queue.filter((t) => !t.priority), laneRatio(cfg), laneMade);
+  const lanes = { next: () => lanesFirst.next() || lanesRest.next() };
   for (let target = lanes.next(); target; target = lanes.next()) {
     if (made() >= room) { heldStop = true; break; }
     if (made() >= result.quota || result.attempted >= result.quota * 2 + 2 || considered >= result.quota * 6 + 10) break;
@@ -372,11 +375,11 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     }
     result.related_links += linkedFrom.length;
     if (appr) {
-      book.pages.push({ slug, query: target.query, lane: target.lane || 'striking', score: target.score, scores: target.scores, reasons: target.reasons || [], signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: null, queued_at: today, status: 'pending_approval', pending_rel: path.posix.join(appr.pending_dir, rel), hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: [], checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
+      book.pages.push({ slug, query: target.query, lane: target.lane || 'striking', ...(target.priority ? { priority: target.priority } : {}), score: target.score, scores: target.scores, reasons: target.reasons || [], signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: null, queued_at: today, status: 'pending_approval', pending_rel: path.posix.join(appr.pending_dir, rel), hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: [], checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
       result.queued++; laneMade[target.lane || 'striking']++;
       continue;
     }
-    book.pages.push({ slug, query: target.query, lane: target.lane || 'striking', score: target.score, scores: target.scores, reasons: target.reasons || [], signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: today, status: 'live', hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: linkedFrom, checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
+    book.pages.push({ slug, query: target.query, lane: target.lane || 'striking', ...(target.priority ? { priority: target.priority } : {}), score: target.score, scores: target.scores, reasons: target.reasons || [], signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: today, status: 'live', hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: linkedFrom, checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
     result.published++; laneMade[target.lane || 'striking']++;
     if (gateNotes.length) result.noted = (result.noted || 0) + 1;
   }

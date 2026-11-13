@@ -400,6 +400,70 @@ test('FIND clusters same-intent variants and the free-model screen drops off-aud
   assert.match(down.notRead, /429/);
 });
 
+test('FIND asks about every config topic before a measured query gets a second question; priority topics are asked and built first', async () => {
+  // Six measured queries that outrank any autocomplete-only search, and a budget of 10 questions.
+  const gscRows = ['founder morning routine checklist', 'investor update email cadence', 'hiring scorecard for startups', 'board meeting agenda outline', 'startup runway calculator sheet', 'cofounder equity split talk']
+    .map((q, i) => ({ keys: [q, 'https://example.com/'], clicks: 0, impressions: 400 - i, position: 9 }));
+  const topics = ['quarterly goal setting', 'meeting notes system', 'delegation checklist'];
+  const cfg = (find) => ({ topics, cap: { max_live_pages: 1 }, find: { max_autocomplete_calls: 20, ...find } });
+  const asked = (calls) => calls.filter((u) => u.includes('suggestqueries.google.com')).map((u) => new URL(u).searchParams.get('q'));
+  const firstPage = (root) => JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pages.json'))).pages[0];
+
+  const root = site({ cfg: cfg({ priority_topics: 1 }) });
+  const calls = [];
+  const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch({ gscRows, calls }), chat: distinctChat() });
+  const q = asked(calls);
+  assert.equal(q[0], 'quarterly goal setting', 'the priority topic is asked first');
+  for (const t of topics) assert.ok(q.includes(t), `topic "${t}" was asked`);
+  const rec = JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/discovery-receipt.json')));
+  assert.deepEqual([rec.seeds.topics, rec.seeds.topics_asked, rec.seeds.priority_topics], [3, 3, 1]);
+  assert.ok(rec.seeds.priority_targets > 0);
+  const targets = JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/targets.json'))).targets;
+  assert.equal(targets[0].priority, 'quarterly goal setting');
+  assert.ok(targets.some((t) => !t.priority && t.score > targets[0].score), 'a measured search scores higher than the priority one');
+  // one page of room under the cap: it goes to the priority search, not the highest score
+  assert.equal(r.did.build.published, 1);
+  assert.match(firstPage(root).query, /quarterly goal setting/);
+  assert.equal(firstPage(root).priority, 'quarterly goal setting');
+
+  // negative proof 1: with no priority topics the same site builds its highest-scoring search first
+  const plain = site({ cfg: cfg({}) });
+  await run({ root: plain, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch({ gscRows }), chat: distinctChat() });
+  assert.doesNotMatch(firstPage(plain).query, /quarterly goal setting/);
+  assert.equal(firstPage(plain).priority, undefined);
+
+  // negative proof 2: a budget too small for the topics names the ones never asked, and a
+  // priority topic that finds nothing is named too (never a silent green run)
+  const tight = site({ cfg: cfg({ max_autocomplete_calls: 4, priority_topics: 1 }) });
+  const r3 = await run({ root: tight, now: NOW, 'global-mode': 'normal', stage: 'find', fetchImpl: fakeFetch({ gscRows }), chat: distinctChat() });
+  assert.match(r3.report.notes.join('\n'), /NAMED NOTE \[FIND_TOPICS_UNASKED\] .* 1 of 3 topic seed\(s\) were asked \(first: "delegation checklist"\)/);
+  const empty = site({ cfg: { ...cfg({ priority_topics: 1 }), topics: ['weekly planning', ...topics] } }); // the site already has a page on it
+  const r4 = await run({ root: empty, now: NOW, 'global-mode': 'normal', stage: 'find', fetchImpl: async (u, i) => (String(u).includes('q=weekly') || String(u).includes('query=weekly') ? new Response('[]', { status: 200 }) : fakeFetch({ gscRows })(u, i)), chat: distinctChat() });
+  assert.match(r4.report.notes.join('\n'), /NAMED NOTE \[FIND_PRIORITY_EMPTY\]/);
+});
+
+test('a source that refuses the check is named to the model, which swaps it and the page publishes', async () => {
+  const BAD = 'https://refuses.example.org/consumer-advice';
+  const fetchImpl = async (u, i) => (String(u).startsWith('https://refuses.example.org') ? new Response('Forbidden', { status: 403 }) : fakeFetch()(u, i));
+  // The model swaps the source only when the fix pass names the refused URL and why.
+  const chat = (swaps) => async (args) => {
+    const d = JSON.parse((await distinctChat()(args)).answer);
+    if (!/Search to answer/.test(args.messages[1].content)) return { ok: true, answer: JSON.stringify(d) };
+    const told = args.messages[1].content.includes(`${BAD} (HTTP 403`);
+    if (!(swaps && told)) d.facts[1].source_url = BAD;
+    return { ok: true, answer: JSON.stringify(d) };
+  };
+  const root = site({ cfg: { cap: { max_live_pages: 1 } } });
+  const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl, chat: chat(true) });
+  assert.equal(r.did.build.published, 1, r.report.notes.join(' | '));
+  assert.ok(!JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pages.json'))).pages[0].facts.includes(BAD));
+  // negative proof: a model that keeps the refused source is dropped, and the drop names the URL
+  const stuck = site({ cfg: { cap: { max_live_pages: 1 } } });
+  const r2 = await run({ root: stuck, now: NOW, 'global-mode': 'normal', fetchImpl, chat: chat(false) });
+  assert.equal(r2.did.build.published, 0);
+  assert.match(JSON.stringify(JSON.parse(fs.readFileSync(path.join(stuck, 'data/search-loop/pages.json'))).dropped[0].reason), /refuses\.example\.org\/consumer-advice \(HTTP 403: this site refuses automated checks/);
+});
+
 test('a draft the model marks off-audience is dropped with the reason', async () => {
   const root = site();
   const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: async () => ({ ok: true, answer: '{"skip":"different meaning"}' }) });
