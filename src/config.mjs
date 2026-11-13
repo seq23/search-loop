@@ -49,6 +49,7 @@ export function checkConfig(c) {
   need(typeof c.audience === 'string' && c.audience.length > 5, 'audience is required');
   need(typeof c.voice === 'string' && c.voice.length > 5, 'voice is required');
   need(Array.isArray(c.topics) && c.topics.length > 0, 'topics: at least one topic seed');
+  need(c.find?.priority_topics === undefined || (Number.isInteger(c.find.priority_topics) && c.find.priority_topics >= 0 && c.find.priority_topics <= (c.topics?.length || 0)), 'find.priority_topics: a whole number from 0 to the number of topics (how many of the first topics are the site\'s priority searches)');
   need(c.action && typeof c.action.label === 'string' && typeof c.action.url === 'string', 'action.label and action.url (the site\'s one action) are required');
   need(Array.isArray(c.allowed_link_targets) && c.allowed_link_targets.length > 0, 'allowed_link_targets: at least one origin');
   need(['normal', 'slow', 'off'].includes(c.mode ?? 'normal'), 'mode must be normal | slow | off');

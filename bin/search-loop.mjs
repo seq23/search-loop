@@ -66,6 +66,7 @@ export async function run(opts) {
     progress('find', 'start');
     did.find = await find(cfg, { fetchImpl: opts.fetchImpl, now, chat: opts.chat });
     for (const [k, v] of Object.entries(did.find.sources)) if (String(v).startsWith('not read')) notes.push(`FIND ${k}: ${v}`);
+    notes.push(...(did.find.notes || []));
   } else if (stage === 'find') notes.push(`FIND skipped: mode=${mode}`);
 
   // CAP weekly, before BUILD: the per-site cap moves only with Google impressions.
@@ -114,7 +115,7 @@ export async function run(opts) {
   if (rp.length) throw new NamedStop('REPORT_SHAPE', rp.join('; '), EXIT.PROBLEMS);
   const out = path.resolve(root, opts['report-out'] || path.join(cfg.ledger_dir, 'search-loop-week.json'));
   writeJson(out, report);
-  const census = `search-loop ${cfg.site}: mode=${mode} find=${did.find ? `${did.find.targets} targets` : 'skipped'} published=${did.build?.published ?? 0}/${did.build?.quota ?? 0} held_by_cap=${did.build?.held ?? 0} redirected=${did.build?.redirected ?? 0} dropped=${did.build?.dropped ?? 0} related_links=${did.build?.related_links ?? 0} checked=${did.check?.checked ?? 0} measured=${did.check?.measured ?? 0} wins=${did.check?.wins ?? 0} strengthened=${did.check?.strengthened ?? 0} undone=${did.check?.undone ?? 0} merged=${did.check?.merged ?? 0} refreshed=${did.check?.refresh?.refreshed ?? 0}/${did.check?.refresh?.due ?? 0} indexnow=${did.check?.indexnow ?? 0} report=${path.relative(root, out)}`;
+  const census = `search-loop ${cfg.site}: mode=${mode} find=${did.find ? `${did.find.targets} targets${did.find.priority ? ` (${did.find.priority} priority)` : ''}` : 'skipped'} published=${did.build?.published ?? 0}/${did.build?.quota ?? 0} held_by_cap=${did.build?.held ?? 0} redirected=${did.build?.redirected ?? 0} dropped=${did.build?.dropped ?? 0} related_links=${did.build?.related_links ?? 0} checked=${did.check?.checked ?? 0} measured=${did.check?.measured ?? 0} wins=${did.check?.wins ?? 0} strengthened=${did.check?.strengthened ?? 0} undone=${did.check?.undone ?? 0} merged=${did.check?.merged ?? 0} refreshed=${did.check?.refresh?.refreshed ?? 0}/${did.check?.refresh?.due ?? 0} indexnow=${did.check?.indexnow ?? 0} report=${path.relative(root, out)}`;
   return { report, census, nothing, mode, did, out, root, cfg };
 }
 
