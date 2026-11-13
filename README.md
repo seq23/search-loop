@@ -54,6 +54,8 @@ The weekly autocomplete budget (`find.max_autocomplete_calls`, 80 = 40 questions
 
 `find.priority_topics: N` makes the first N `topics` the site's priority searches (its buyers' searches). A search carrying more than half of one's words (both words of a two-word topic) is marked `priority` in `targets.json`, goes to the relevance screen first (the best 75) and is built before any other search in either lane, still under the cap, the distinct gate and the page gate. No priority search found in a week is `NAMED NOTE [FIND_PRIORITY_EMPTY]`.
 
+A draft with fewer than two working sources is told which URL failed and how (`HTTP 403: this site refuses automated checks, so cite a different publisher`), so the fix pass replaces it instead of citing it again (v1.11.0; ftc.gov and annualcreditreport.com refuse every automated check).
+
 ## Refresh: real freshness, never a fake date (v1.10.0)
 
 Owner goal, 10 Nov 2026, and risk rule R-ADV-12 (FTC Act s5, no fake freshness): every live question page is re-checked every 30-90 days at $0, and its "Updated" date and lastmod move **only** when what the page says changed. Code: `src/refresh.mjs`, run inside CHECK (never on a frozen site, never on a page mid-strengthen).

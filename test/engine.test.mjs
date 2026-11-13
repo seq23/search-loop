@@ -442,6 +442,28 @@ test('FIND asks about every config topic before a measured query gets a second q
   assert.match(r4.report.notes.join('\n'), /NAMED NOTE \[FIND_PRIORITY_EMPTY\]/);
 });
 
+test('a source that refuses the check is named to the model, which swaps it and the page publishes', async () => {
+  const BAD = 'https://refuses.example.org/consumer-advice';
+  const fetchImpl = async (u, i) => (String(u).startsWith('https://refuses.example.org') ? new Response('Forbidden', { status: 403 }) : fakeFetch()(u, i));
+  // The model swaps the source only when the fix pass names the refused URL and why.
+  const chat = (swaps) => async (args) => {
+    const d = JSON.parse((await distinctChat()(args)).answer);
+    if (!/Search to answer/.test(args.messages[1].content)) return { ok: true, answer: JSON.stringify(d) };
+    const told = args.messages[1].content.includes(`${BAD} (HTTP 403`);
+    if (!(swaps && told)) d.facts[1].source_url = BAD;
+    return { ok: true, answer: JSON.stringify(d) };
+  };
+  const root = site({ cfg: { cap: { max_live_pages: 1 } } });
+  const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl, chat: chat(true) });
+  assert.equal(r.did.build.published, 1, r.report.notes.join(' | '));
+  assert.ok(!JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pages.json'))).pages[0].facts.includes(BAD));
+  // negative proof: a model that keeps the refused source is dropped, and the drop names the URL
+  const stuck = site({ cfg: { cap: { max_live_pages: 1 } } });
+  const r2 = await run({ root: stuck, now: NOW, 'global-mode': 'normal', fetchImpl, chat: chat(false) });
+  assert.equal(r2.did.build.published, 0);
+  assert.match(JSON.stringify(JSON.parse(fs.readFileSync(path.join(stuck, 'data/search-loop/pages.json'))).dropped[0].reason), /refuses\.example\.org\/consumer-advice \(HTTP 403: this site refuses automated checks/);
+});
+
 test('a draft the model marks off-audience is dropped with the reason', async () => {
   const root = site();
   const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: async () => ({ ok: true, answer: '{"skip":"different meaning"}' }) });
