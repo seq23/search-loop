@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { REPORT_FIELDS, STATES, REPORT_SCHEMA } from '../src/report.mjs';
 import { DEFAULTS, checkConfig } from '../src/config.mjs';
 import { MODES, OFF_SENTENCE } from '../src/mode.mjs';
+import { barePushes } from './workflow-push.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -87,6 +88,12 @@ export function check(s) {
     if (emails.length) p.push(`${f.path}: contains an email address (${emails[0]})`);
     if (f.text.split('\n').some((l) => /west peek/i.test(l) && !/exclude_words|west peek\/i/.test(l))) p.push(`${f.path}: names West Peek outside an exclude list (Spry never names it)`);
   }
+  // 9. Every push from CI rebases and retries (p-n-p, 18 Nov 2026: a bare push after main moved went red).
+  const wf = [{ path: '.github/workflows/mode-sync.yml', text: s.modeSync }, ...s.files.filter((f) => /^\.github\/workflows\/.+\.ya?ml$/.test(f.path) && !f.path.endsWith('mode-sync.yml'))];
+  examined++;
+  for (const b of barePushes(wf)) p.push(`bare git push (no rebase/retry): ${b}`);
+  // 10. A caller can check its config on a pull request: stage validate runs validate-config only.
+  if (!/inputs\.stage == 'validate'[\s\S]*?bin\/search-loop\.mjs validate-config/.test(w)) p.push('search-loop.yml has no stage: validate job running validate-config');
   if (examined < 10) p.push(`examined only ${examined} items (floor 10) — the validator saw nothing`);
   return { problems: p, examined };
 }
@@ -112,6 +119,8 @@ function selfTest() {
     ['referrer list keeps paths', mut('referrers', '"chatgpt.com":', '"chatgpt.com/c/":')],
     ['token leaked', () => check({ ...real, files: [...real.files, { path: 'x.mjs', text: `const k = "${'sk-or-' + 'v1-'}0123456789abcdef0123456789abcdef";` }] })],
     ['email leaked', () => check({ ...real, files: [...real.files, { path: 'x.md', text: `write to someone${'@'}gmail.com` }] })],
+    ['mode-sync bare push', mut('modeSync', /node bin\/commit-push\.mjs[^\n]*/, 'git push')],
+    ['no validate stage', mut('reusable', "if: inputs.stage == 'validate'", 'if: false')],
     ['saw nothing', () => check({ ...real, files: [] })],
   ];
   const missed = BROKEN.filter(([, f]) => f().problems.length === 0 || f().problems[0] === 'MUTATION DID NOT APPLY').map(([n]) => n);

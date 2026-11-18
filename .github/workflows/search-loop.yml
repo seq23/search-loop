@@ -13,7 +13,7 @@ on:
         type: string
         default: search-loop.config.json
       stage:
-        description: auto | find | build | check | report
+        description: auto | find | build | check | report | validate (config + model routing only, no network; for pull_request)
         type: string
         default: auto
       engine_ref:
@@ -75,7 +75,30 @@ on:
         value: ${{ jobs.loop.outputs.published }}
 
 jobs:
+  # stage: validate — config and model-routing checks only (the run's own CONFIG_INVALID /
+  # FAIL_LOUD messages), no network, no model call. A caller runs it on pull_request with a
+  # paths filter, so a broken search-loop.config.json or routing file is red before merge.
+  validate:
+    if: inputs.stage == 'validate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: seq23/search-loop
+          ref: ${{ inputs.engine_ref }}
+          path: .search-loop-engine
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Site setup
+        if: inputs.setup_command != ''
+        run: ${{ inputs.setup_command }}
+      - name: Validate the site config and model routing
+        run: node .search-loop-engine/bin/search-loop.mjs validate-config --config "${{ inputs.config }}"
   loop:
+    if: inputs.stage != 'validate'
     runs-on: ubuntu-latest
     # ~4x a normal run (20 min) after the scheduled stagger (0-39 min). The engine's own
     # soft budget (35 min) and watchdog (55 min, NAMED STOP [RUN_HUNG]) end first.
@@ -120,7 +143,7 @@ jobs:
       - name: Site setup
         if: inputs.setup_command != ''
         run: ${{ inputs.setup_command }}
-      - name: Validate the site config
+      - name: Validate the site config and model routing
         run: node .search-loop-engine/bin/search-loop.mjs validate-config --config "${{ inputs.config }}"
       - name: Run the search loop
         id: engine
