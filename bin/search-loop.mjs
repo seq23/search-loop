@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // search-loop run      --config search-loop.config.json [--stage auto|find|build|check|report] [--global-mode normal|slow|off] [--report-out path]
-// search-loop validate-config --config search-loop.config.json
+// search-loop validate-config --config search-loop.config.json   (config + routing only; no network)
 // search-loop --self-test
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,7 +16,7 @@ import { ledger } from '../src/ledger.mjs';
 import { NamedStop, EXIT, isoWeek, writeJson, startClock, progress, runClock } from '../src/util.mjs';
 import { selfTest } from '../src/self-test.mjs';
 import { draftSlot } from '../src/slot.mjs';
-import { resetLanes, noFreeModelStreak } from '../src/llm.mjs';
+import { resetLanes, noFreeModelStreak, loadRouting } from '../src/llm.mjs';
 import crypto from 'node:crypto';
 
 function args(argv) {
@@ -124,9 +124,14 @@ async function main() {
   if (o['self-test']) { const r = await selfTest(); console.log(r); return; }
   const cmd = o._[0] || 'run';
   if (cmd === 'validate-config') {
-    const { problems } = loadConfig(o.config || 'search-loop.config.json', path.resolve(o.root || process.cwd()));
+    // Config only: no network, no model call. Also loads the routing file the run
+    // would load (llm.routing_file or the engine's), so a routing file that breaks
+    // the $0 contract fails here, on the pull request, with the run's own FAIL_LOUD
+    // message (peace-be-still, 18 Nov 2026: every scheduled run failed on it).
+    const { cfg, problems } = loadConfig(o.config || 'search-loop.config.json', path.resolve(o.root || process.cwd()));
+    if (cfg) { try { loadRouting(cfg); } catch (e) { problems.push(String(e?.message || e)); } }
     if (problems.length) throw new NamedStop('CONFIG_INVALID', problems.join('; '), EXIT.PROBLEMS);
-    console.log('config OK');
+    console.log('config OK (config and model routing)');
     return;
   }
   if (cmd === 'draft-slot') {
