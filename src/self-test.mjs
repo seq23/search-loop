@@ -33,6 +33,8 @@ export function cases() {
     ['leaked placeholder text', g((d) => { d.sections[0].paragraphs[0] += ' [insert example here]'; })],
     ['no verified fact', g((d) => { d.facts = d.facts.map((f) => ({ ...f, verified: false })); })],
     ['unsourced statistic', g((d) => { d.sections[0].paragraphs[0] += ' Studies show 73% of founders never plan.'; })],
+    ['unsourced price in digits (v1.12.1)', g((d) => { d.sections[0].paragraphs[0] += ' Most companies charge $79 to $149 a month.'; })],
+    ['unsourced price in words (v1.12.1)', g((d) => { d.sections[0].paragraphs[0] += ' Setup fees range from nineteen to ninety-nine dollars.'; })],
     ['invented review', g((d) => { d.sections[1].paragraphs[0] += ' Customers love it and rated it 5 stars.'; })],
     ['invented credential', g((d) => { d.sections[1].paragraphs[1] += ' Dr. Smith, our board-certified expert, agrees.'; })],
     ['named person quote', g((d) => { d.sections[2].paragraphs[0] += ' According to Jane Porter this always works.'; })],
