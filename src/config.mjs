@@ -55,6 +55,7 @@ export function checkConfig(c) {
   need(['normal', 'slow', 'off'].includes(c.mode ?? 'normal'), 'mode must be normal | slow | off');
   need(HEALTH_GATES.includes(c.health_gate ?? 'none'), `health_gate must be ${HEALTH_GATES.join(' | ')}`);
   need(c.gate?.banned_patterns === undefined || (Array.isArray(c.gate.banned_patterns) && c.gate.banned_patterns.every((x) => { try { new RegExp(x, 'i'); return typeof x === 'string'; } catch { return false; } })), 'gate.banned_patterns: a list of valid regular-expression strings');
+  need(c.gate?.own_prices === undefined || (Array.isArray(c.gate.own_prices) && c.gate.own_prices.every((x) => typeof x === 'string' && x.trim().length >= 3)), 'gate.own_prices: a list of the site\'s own offer text, written exactly as on the page (e.g. "DIY Credit Letter Kit ($19 once)")');
   need(typeof (c.menu_pages_need_approval ?? false) === 'boolean', 'menu_pages_need_approval must be true or false');
   need(Array.isArray(c.protected_paths ?? []), 'protected_paths must be a list');
   need(c.author === undefined || (c.author && typeof c.author.name === 'string' && c.author.name.trim()), 'author: { name, url? } (a real person shown as the byline)');

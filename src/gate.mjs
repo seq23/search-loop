@@ -6,7 +6,7 @@
 //
 // Two kinds of finding (her ruling, 2 Nov 2026: "no petty validation"):
 // - problems: block the page. Safety and broken output only: invented stats,
-//   reviews, credentials, people; health claims; link targets; unsourced fact
+//   reviews, credentials, people, unsourced prices; health claims; link targets; unsourced fact
 //   lines; missing structure (H1, FAQPage, social tags, date, action); leaked
 //   placeholders; near-duplicates; and a length FLOOR missed by more than 25%.
 // - notes: never block. Anything over a length limit, a floor missed by less
@@ -35,6 +35,13 @@ export function band(n, [min, max]) {
 }
 
 const STAT = /(\b\d+(\.\d+)?\s?(%|percent\b)|\b\d+\s+(out of|in)\s+\d+\b|\b(studies|research|surveys?|data) (show|shows|find|finds|found|suggests?)\b|\bstatistic)/i;
+// A money amount (v1.12.1): every price claim about another company must be sourced (risk brain
+// R-ADV-13; approvalprep.com /questions/how-much-does-credit-repair-cost/ shipped 16 Nov 2026 with
+// "setup fees ranging from nineteen to ninety-nine dollars ... sixty to one hundred fifty dollars"
+// and no source, because STAT only knew percentages). Digits ($19, US$5, USD 60, 1,200 dollars,
+// 99 cents) and a spelled-out number right before "dollars".
+const NUM_WORD = '(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion)';
+const PRICE = new RegExp(`([$€£]\\s?\\d|\\b(USD|US\\$)\\s?\\d|\\b\\d[\\d,]*(\\.\\d+)?\\s?(dollars?|bucks|usd|cents?)\\b|\\b${NUM_WORD}[\\s-]+(dollars?|bucks|cents?)\\b)`, 'i');
 const REVIEW = /(testimonial|\breviews? (from|by)\b|\brated \d|\b\d(\.\d)?\s?stars?\b|\b(customers|clients|users|patients) (say|love|rave)\b|\bfive-star\b)/i;
 const CREDENTIAL = /(\bDr\.\s?[A-Z]|\bPh\.?D\b|\bM\.D\.|\bboard[- ]certified\b|\baward[- ]winning\b|\bour (team of )?experts\b|\b\d+\+? years of experience\b|\bas seen (on|in)\b)/;
 const PERSON_QUOTE = /([Aa]ccording to [A-Z][a-z]+ [A-Z][a-z]+|[A-Z][a-z]+ [A-Z][a-z]+,? (a|an|the) [a-z]+ (at|from|with) |“[^”]{10,}”\s?[—-]\s?[A-Z])/;
@@ -165,10 +172,19 @@ export function gateReport(page, ctx) {
     const t = stripTags(li);
     if (!verifiedFacts.some((f) => t.includes(f.claim.slice(0, 40)))) p.push(`facts: "${t.slice(0, 60)}" has no verified source`);
   }
-  const prose = stripTags(main.replace(factsBlock, ' '));
+  // The site's own offer is not a claim about another company: the action label the template
+  // writes (ApprovalPrep: "... DIY Credit Letter Kit ($19 once)") and any literal own-offer text the
+  // config declares in gate.own_prices are taken out before the price check, nothing wider.
+  let prose = stripTags(main.replace(factsBlock, ' '));
+  for (const own of [cfg.action.label, ...(cfg.gate?.own_prices || [])]) if (own) prose = prose.split(String(own).replace(/\s+/g, ' ').trim()).join(' ');
   void factText;
-  for (const s of prose.split(/(?<=[.!?])\s+/)) {
-    if (STAT.test(s) && !verifiedFacts.some((f) => s.includes(f.claim.slice(0, 40)))) { p.push(`invented: unsourced statistic "${s.slice(0, 80)}"`); break; }
+  const sourced = (s) => verifiedFacts.some((f) => s.includes(f.claim.slice(0, 40)));
+  const sentences = prose.split(/(?<=[.!?])\s+/);
+  for (const s of sentences) {
+    if (STAT.test(s) && !sourced(s)) { p.push(`invented: unsourced statistic "${s.slice(0, 80)}"`); break; }
+  }
+  for (const s of sentences) {
+    if (PRICE.test(s) && !sourced(s)) { p.push(`invented: unsourced price "${s.slice(0, 100)}" (drop the amount, or move it into "facts" with a dated source that states it)`); break; }
   }
   if (REVIEW.test(prose)) p.push(`invented: review or testimonial language "${(prose.match(REVIEW) || [])[0]}"`);
   if (CREDENTIAL.test(prose)) p.push(`invented: credential or expert claim "${(prose.match(CREDENTIAL) || [])[0]}"`);
