@@ -8,14 +8,14 @@
 // slots, titles and release time, but its queued bodies were template clones.
 // The engine's writer replaces the bodies, slot for slot.
 //
-// slot = { title, base?, siblings?, question?, kind?, words?: [min, max], avoid?: { headings: [], phrases: [], sources: [] }, related?: [title] }
+// slot = { title, base?, siblings?, question?, kind?, words?: [min, max], avoid?: { headings: [], phrases: [], sources: [] }, related?: [title | { h1, title }] }
 // draftSlot(cfg, slot, { chat, fetchImpl, check }) ->
 //   { ok: true, draft, model, words, attempts } | { ok: false, stop, reason, problems? }
 // `check(draft)` lets the site add its own blocking checks (copy/duplicate share
 // against its live pages); its problems go back to the model on the next pass.
 import { freeChat, parseJsonAnswer } from './llm.mjs';
-import { cleanDraft, verifyFacts, MAX_ATTEMPTS } from './build.mjs';
-import { LIMITS } from './gate.mjs';
+import { cleanDraft, verifyFacts, MAX_ATTEMPTS, pageName } from './build.mjs';
+import { LIMITS, bannedHits } from './gate.mjs';
 
 export const SLOT_WORDS = { insight: [800, 1200], article: [1000, 1500], guide: [1500, 2200], 'white paper': [1800, 2500] };
 const FIRST_PERSON = /\b(I|I'm|I've|I'd|I'll|my|me|mine|myself)\b/;
@@ -40,7 +40,7 @@ export function slotPrompt(cfg, slot, problems) {
     { role: 'system', content: `You write one ${slot.kind || 'article'} for ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Voice: ${cfg.voice}. You return ONLY a JSON object, no prose around it.` },
     { role: 'user', content: `${slot.base ? `Approved base title (keep these words): "${slot.base}". Sibling pieces on the same base already take these angles: ${(slot.siblings || []).map((t) => `"${t}"`).join(', ') || 'none'}. Give this piece its own angle and its own search question, so siblings never compete for the same search.` : `Title (keep it; it was approved): "${slot.title}"`}
 The real question this piece answers: "${slot.question || slot.title}"${slot.base ? ' (sharpen it into one distinct search question for this angle)' : ''}
-Other pieces on the site you may mention by title (do not invent others): ${(slot.related || []).join(' | ') || 'none'}
+Other pieces on the site you may mention by name (do not invent others): ${(slot.related || []).map((r) => pageName(cfg, r)).join(' | ') || 'none'}
 The piece ends by inviting the reader to: ${cfg.action?.label || 'get in touch'}.${facts}
 
 Return JSON with exactly these keys:
@@ -61,7 +61,7 @@ Hard rules: no statistics, percentages or "studies show" anywhere except inside 
 }
 
 /** Blocking problems with a slot draft (before the site's own checks). */
-export function slotProblems(d, slot) {
+export function slotProblems(d, slot, cfg = {}) {
   const p = [];
   const [min, max] = slotWords(slot);
   const n = draftWords(d);
@@ -82,6 +82,8 @@ export function slotProblems(d, slot) {
   // A script the reader might say, in quotation marks, may use I; the writer's own voice may not.
   if (FIRST_PERSON.test(voice.replace(/["“][^"”]{0,300}["”]/g, ' '))) p.push('first person found (I, me, my); the writer never speaks as the therapist');
   if (/\[[^\]]*\]|lorem ipsum|TODO|insert /i.test(text)) p.push('placeholder text');
+  // The calendar lane obeys the same banned words as BUILD: engine-wide plus gate.banned_patterns.
+  p.push(...bannedHits(cfg, `${d.title_lead || ''}\n${d.meta_description || ''}\n${text}`));
   if (/\b988\b|not therapy|not a substitute|crisis/i.test(d.direct_answer)) p.push('the direct answer carries a disclaimer or crisis line; the first sentences are the answer only (the page shows its own note)');
   if (slot.base) {
     const angle = String(d.angle || '').trim();
@@ -112,7 +114,7 @@ export async function draftSlot(cfg, slot, { chat = freeChat, fetchImpl = fetch,
     if (slot.base) { d.angle = String(parsed.angle || '').trim().replace(/^[:\s]+|[.\s]+$/g, ''); d.question = String(parsed.question || '').trim(); }
     d.h1 = slot.base && d.angle ? `${slot.base}: ${d.angle}` : slot.title;
     d.facts = await verifyFacts(d.facts, fetchImpl);
-    problems = slotProblems(d, slot);
+    problems = slotProblems(d, slot, cfg);
     if (!problems.length && typeof check === 'function') problems = (await check(d)) || [];
     last = d;
     if (!problems.length) return { ok: true, draft: d, model, words: draftWords(d), attempts: i + 1 };

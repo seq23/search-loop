@@ -23,6 +23,17 @@ export function readPage(root, rel) {
   return { rel, route: routeFor(rel), title, h1, canonical, noindex, html };
 }
 
+// The address a page is served at. A file's repo path is its address only when the repo root is
+// the web root; a site that serves public/ (detoxdenver.org, 20 Nov 2026) linked
+// /public/questions/... (404) in every "Related questions" block. A page's own canonical on
+// base_url says where it is served, so it wins.
+export function servedRoute(cfg, p) {
+  if (p.canonical && cfg.base_url && p.canonical.startsWith(cfg.base_url)) {
+    try { return new URL(p.canonical).pathname; } catch { /* fall through */ }
+  }
+  return p.route;
+}
+
 export function buildIndex(cfg, { withText = false } = {}) {
   const root = cfg.root;
   const skip = [...(cfg.related?.skip_dirs || []), 'node_modules', 'dist', '.git'];
@@ -34,7 +45,7 @@ export function buildIndex(cfg, { withText = false } = {}) {
     let p;
     try { p = readPage(root, rel); } catch { continue; }
     if (p.noindex) continue;
-    const entry = { rel, route: p.route, title: p.title, h1: p.h1, canonical: p.canonical, protected: isProtected(cfg, rel) };
+    const entry = { rel, route: servedRoute(cfg, p), title: p.title, h1: p.h1, canonical: p.canonical, protected: isProtected(cfg, rel) };
     if (withText) { entry.text = stripTags(p.html.replace(/<(nav|header|footer)[\s\S]*?<\/\1>/gi, ' ')); entry.sh = shingles(entry.text); }
     pages.push(entry);
   }

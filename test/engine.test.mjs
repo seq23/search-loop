@@ -481,7 +481,7 @@ test('a draft that only misses style or over-limit aims is published, with its n
     d.direct_answer += ' ' + d.direct_answer; // ~100 words, over the 60 aim
     d.faq[0].a += ' ' + d.faq[0].a; // over the 60-word aim
     d.sections = d.sections.slice(0, 3); // a little under 600 words, above 450
-    d.sections[0].paragraphs[0] += ' Let us delve into it.';
+    d.sections[0].paragraphs[0] += ' In today\'s fast-paced world, plans slip.';
     return { ok: true, answer: JSON.stringify(d) };
   };
   const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: styled });
@@ -894,4 +894,24 @@ test('CHECK reshape: a live page with filler is re-rendered from its draft and s
   const r2 = await run({ root, now: new Date(day2.getTime() + 86400000), 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: distinctChat(), stage: 'check' });
   assert.equal(r2.did.check.reshaped, undefined);
   assert.equal(fs.readFileSync(path.join(root, a.rel), 'utf8'), nowA);
+});
+
+test('a page under a served subfolder is linked at its canonical address, not its repo path', async () => {
+  const { buildIndex, servedRoute } = await import('../src/site-index.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sl-root-'));
+  const rel = 'public/questions/can-you-leave/index.html';
+  fs.mkdirSync(path.join(root, path.dirname(rel)), { recursive: true });
+  fs.writeFileSync(path.join(root, rel), '<html><head><title>Can you leave?</title><link rel="canonical" href="https://example.com/questions/can-you-leave/"></head><body><h1>Can you leave?</h1></body></html>');
+  const cfg = { root, base_url: 'https://example.com', related: { scan_dirs: ['public/questions'] } };
+  const [page] = buildIndex(cfg);
+  assert.equal(page.route, '/questions/can-you-leave/');
+  // No canonical, or one on another site: the repo path stays the address.
+  assert.equal(servedRoute(cfg, { route: '/a/', canonical: '' }), '/a/');
+  assert.equal(servedRoute(cfg, { route: '/a/', canonical: 'https://other.org/b/' }), '/a/');
+});
+
+test('BUILD names related pages to the model by their H1, not the "Title | Site" tab text', () => {
+  const cfg = structuredClone(FIXTURE_CONFIG_RAW);
+  const m = draftPrompt(cfg, { query: 'how to plan a week' }, [{ route: '/weekly-review/', h1: 'How to run a weekly review', title: `Weekly review | ${cfg.site_name}` }, { route: '/x/', title: `Planning basics — ${cfg.site_name}` }], null);
+  assert.match(m[1].content, /mention by name \(do not invent others\): How to run a weekly review \| Planning basics\n/);
 });
