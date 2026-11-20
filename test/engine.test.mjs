@@ -895,3 +895,17 @@ test('CHECK reshape: a live page with filler is re-rendered from its draft and s
   assert.equal(r2.did.check.reshaped, undefined);
   assert.equal(fs.readFileSync(path.join(root, a.rel), 'utf8'), nowA);
 });
+
+test('a page under a served subfolder is linked at its canonical address, not its repo path', async () => {
+  const { buildIndex, servedRoute } = await import('../src/site-index.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sl-root-'));
+  const rel = 'public/questions/can-you-leave/index.html';
+  fs.mkdirSync(path.join(root, path.dirname(rel)), { recursive: true });
+  fs.writeFileSync(path.join(root, rel), '<html><head><title>Can you leave?</title><link rel="canonical" href="https://example.com/questions/can-you-leave/"></head><body><h1>Can you leave?</h1></body></html>');
+  const cfg = { root, base_url: 'https://example.com', related: { scan_dirs: ['public/questions'] } };
+  const [page] = buildIndex(cfg);
+  assert.equal(page.route, '/questions/can-you-leave/');
+  // No canonical, or one on another site: the repo path stays the address.
+  assert.equal(servedRoute(cfg, { route: '/a/', canonical: '' }), '/a/');
+  assert.equal(servedRoute(cfg, { route: '/a/', canonical: 'https://other.org/b/' }), '/a/');
+});
