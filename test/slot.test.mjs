@@ -107,3 +107,20 @@ test('sibling slots: each gets its own angle on the approved base and the answer
   assert.match(seen[1], /already a sibling/);
   assert.match(seen[2], /answer only/);
 });
+
+test('the calendar lane refuses banned words: the engine-wide list and the site\'s gate.banned_patterns', () => {
+  const clean = longDraft();
+  assert.ok(!slotProblems(clean, slot, cfg).some((p) => /banned word/.test(p)), 'a clean draft has no banned word');
+  const shared = longDraft((d) => { d.sections[0].paragraphs[0] += ' A good plan will unlock your week.'; return d; });
+  assert.ok(slotProblems(shared, slot, cfg).some((p) => /banned word: "unlock"/.test(p)), 'the shared list applies with no site config');
+  const site = longDraft((d) => { d.faq[0].a += ' This proves the plan works.'; return d; });
+  assert.ok(slotProblems(site, slot, { ...cfg, gate: { banned_patterns: ['\\bproves\\b'] } }).some((p) => /banned word for this site: "proves"/.test(p)));
+  assert.ok(!slotProblems(site, slot, cfg).some((p) => /proves/.test(p)), 'a site pattern applies only where configured');
+});
+
+test('the calendar lane names related pieces by H1, never "Title | Site"', async () => {
+  const seen = [];
+  await draftSlot(cfg, { ...slot, related: [`Weekly review checklist | ${cfg.site_name}`, { h1: 'How long should planning take?', title: `Planning time | ${cfg.site_name}` }] }, { chat: chatWith([longDraft()], seen), fetchImpl: fetchOk });
+  assert.match(seen[0], /mention by name \(do not invent others\): Weekly review checklist \| How long should planning take\?\n/);
+  assert.doesNotMatch(seen[0], new RegExp(`\\| ${cfg.site_name}`));
+});

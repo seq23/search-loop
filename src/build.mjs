@@ -52,6 +52,16 @@ export function pickRelated(cfg, index, query, { exclude = new Set(), n = 3, edi
     .map((x) => x.p);
 }
 
+// How a page is named to the model: its H1, the words a reader sees, never the "Title | Site"
+// browser-tab form (the model copied "Can you leave? | Dianne's Place" into prose). A bare
+// string (a calendar slot's related list) loses a trailing "| Site" / "— Site" suffix.
+export function pageName(cfg, page) {
+  if (page && typeof page === 'object' && page.h1) return String(page.h1).trim();
+  const t = String((page && typeof page === 'object' ? page.title : page) || '').trim();
+  const names = [cfg.site_name, cfg.site_words].filter(Boolean).map((n) => String(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return names.length ? t.replace(new RegExp(`\\s*[|–—-]\\s*(?:${names.join('|')})\\s*$`, 'i'), '').trim() : t;
+}
+
 export function draftPrompt(cfg, target, related, problems) {
   const facts = cfg.health?.real_facts ? `\nReal facts on record (use only these for services/hours): ${JSON.stringify(cfg.health.real_facts)}` : '';
   // v1.5.0: a search that names one of the site's places gets real local substance, never a city-name swap.
@@ -61,7 +71,7 @@ export function draftPrompt(cfg, target, related, problems) {
   return [
     { role: 'system', content: `You write one web page that answers one search for ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Voice (how to write; never copy these sentences into the page): ${cfg.voice}. You return ONLY a JSON object, no prose around it.` },
     { role: 'user', content: `Search to answer: "${target.query}"
-Existing pages on the site you may mention by title (do not invent others): ${related.map((r) => r.title).join(' | ') || 'none'}
+Existing pages on the site you may mention by name (do not invent others): ${related.map((r) => pageName(cfg, r)).join(' | ') || 'none'}
 The page ends by inviting the reader to: ${cfg.action.label}.${facts}${local}
 
 Return JSON with exactly these keys:
