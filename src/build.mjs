@@ -23,7 +23,7 @@ export const DROP_RETRY_DAYS = 28;
 // FIXABLE_MAX_DROPS drops of the same search it waits the full DROP_RETRY_DAYS.
 export const FIXABLE_RETRY_DAYS = 3;
 export const FIXABLE_MAX_DROPS = 3;
-const FIXABLE = [/^b[45] .* words \(aim \d/, /^b9 \d+ words of visible text/, /^facts: needs at least 2 distinct sources/, /^the answer was not the JSON object/, /^no draft from the free model/];
+const FIXABLE = [/^b[45] .* words \(aim \d/, /^b9 \d+ words of visible text/, /^facts: needs at least 2 distinct sources/, /^facts: needs a facts_heading/, /^the answer was not the JSON object/, /^no draft from the free model/];
 export const fixableDrop = (d) => Array.isArray(d.reason) && d.reason.length > 0 && d.reason.every((r) => FIXABLE.some((re) => re.test(String(r))));
 // Pages are written in the site's language; a search clearly in another language
 // (a stopword from it, or letters English never uses) is skipped, not queued.
@@ -82,7 +82,8 @@ Return JSON with exactly these keys:
  "direct_answer": "${LIMITS.answer[0]}-${LIMITS.answer[1]} words that answer the search outright and define it in the form '<subject> is ...'",
  "sections": [ {"heading": "a question people ask about this", "paragraphs": ["120-180 words", "..."], "bullets": ["optional: 3-6 short list items"]} ],  // 4-5 sections, 650+ words in total; at least one section has "bullets"
  "faq": [ {"q": "a related question", "a": "${LIMITS.faqAnswer[0]}-${LIMITS.faqAnswer[1]} words"} ],  // exactly 4
- "facts": [ {"claim": "one checkable fact in one sentence", "source_url": "https URL of a well-known public page that states it (government, university, major publication, Wikipedia)", "source_name": "publisher name"} ]  // 2-4, from at least 2 different sources
+ "facts_heading": "a short heading for the facts below, in the page's voice, that says what they help the reader do (for example 'Before you plan the food table'); never 'What the sources say', 'Sources' or 'Facts'",
+ "facts": [ {"claim": "one checkable fact, in one plain sentence, that this reader can act on for this search (a safety rule, a timing, a local rule or condition that changes their plan); never trivia such as which county a town is in or how big it is", "source_url": "https URL of the exact public page that states it (government, university, major publication)", "source_name": "publisher name"} ]  // 2-4, from at least 2 different sources
 }
 If this search does not fit the audience or the site (a different meaning of the words, someone else's brand), return {"skip":"why"} instead.
 Hard rules: no statistics, percentages or "studies show" anywhere except inside "facts"; no prices, fees or money amounts (in digits or words, e.g. "$49" or "forty-nine dollars") anywhere except inside "facts" with a source that states them; no named people, quotes, doctors, credentials, reviews, testimonials or star ratings; no sentence or phrase repeated anywhere on the page (say each thing once, in words only this page would use); no promises of outcomes${cfg.health_gate !== 'none' ? '; no treatment or outcome claims, never "painless", no medical advice, no hours or services beyond the real facts' : ''}; no filler; second person, short sentences.${problems ? `\n\nYour previous draft failed these checks; fix every one:\n- ${problems.join('\n- ')}` : ''}` },
@@ -99,6 +100,7 @@ export function cleanDraft(d) {
     h1: str(d.h1), title_lead: str(d.title_lead), meta_description: str(d.meta_description), direct_answer: str(d.direct_answer),
     sections: (Array.isArray(d.sections) ? d.sections : []).map((s) => ({ heading: str(s?.heading), paragraphs: (Array.isArray(s?.paragraphs) ? s.paragraphs : []).map(str).filter(Boolean), bullets: (Array.isArray(s?.bullets) ? s.bullets : []).map(str).filter(Boolean).slice(0, 8) })).filter((s) => s.heading && s.paragraphs.length),
     faq: (Array.isArray(d.faq) ? d.faq : []).map((f) => ({ q: str(f?.q), a: str(f?.a) })).filter((f) => f.q && f.a).slice(0, 6),
+    facts_heading: str(d.facts_heading),
     facts: (Array.isArray(d.facts) ? d.facts : []).map((f) => ({ claim: str(f?.claim), source_url: str(f?.source_url), source_name: str(f?.source_name) })).filter((f) => f.claim && /^https:\/\//.test(f.source_url)).slice(0, 4),
   };
   if (!(out.h1 && out.direct_answer && out.sections.length && out.faq.length)) return null;
@@ -342,6 +344,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
       const post = matchIntent(cfg, draft.h1, corpus) || matchAnswer(cfg, draft.direct_answer, answers);
       if (post) { draft = null; html = null; problems = null; target.__redirect = post; break; }
       ({ problems, notes: gateNotes } = gateReport({ query: target.query, html, facts: draft.facts }, { cfg, corpus: index, siblings, selfRoute: route }));
+      if (!draft.facts_heading && draft.facts.some((f) => f.verified)) problems.push('facts: needs a facts_heading that says, in the page\'s voice, what the facts help the reader do');
       if (!problems.length) {
         // v1.9.2: a passing draft whose answer still defines nothing is asked for once more; it is kept
         // (with its gate note) if that try does not come back better.
