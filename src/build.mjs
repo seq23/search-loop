@@ -295,9 +295,12 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
   const laneMade = { can_be_one: 0, striking: 0 };
   for (const p of book.pages) if (p.lane && p.status !== 'declined') laneMade[p.lane] = (laneMade[p.lane] || 0) + 1;
   // Priority searches (find.priority_topics, v1.11.0) are taken before any other, in either lane.
-  const lanesFirst = laneQueue(queue.filter((t) => t.priority), laneRatio(cfg), laneMade);
-  const lanesRest = laneQueue(queue.filter((t) => !t.priority), laneRatio(cfg), laneMade);
-  const lanes = { next: () => lanesFirst.next() || lanesRest.next() };
+  // v1.14.0: AI answer misses with no page that fits are taken first of all.
+  const aiMiss = (t) => t.ai_miss_ids?.length > 0;
+  const lanesAi = laneQueue(queue.filter(aiMiss), laneRatio(cfg), laneMade);
+  const lanesFirst = laneQueue(queue.filter((t) => !aiMiss(t) && t.priority), laneRatio(cfg), laneMade);
+  const lanesRest = laneQueue(queue.filter((t) => !aiMiss(t) && !t.priority), laneRatio(cfg), laneMade);
+  const lanes = { next: () => lanesAi.next() || lanesFirst.next() || lanesRest.next() };
   for (let target = lanes.next(); target; target = lanes.next()) {
     if (made() >= room) { heldStop = true; break; }
     if (made() >= result.quota || result.attempted >= result.quota * 2 + 2 || considered >= result.quota * 6 + 10) break;

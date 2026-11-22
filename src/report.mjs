@@ -6,6 +6,7 @@ import { centralDate, daysBetween, isoWeek } from './util.mjs';
 import { OFF_SENTENCE } from './mode.mjs';
 import { currentCap, heldThisWeek, liveEnginePages } from './cap.mjs';
 import { laneStats, laneRatio, WEIGHT_DEFAULTS } from './compete.mjs';
+import { aiMissesBlock, checkAiMissesBlock } from './ai-misses.mjs';
 
 export const REPORT_SCHEMA = 'search-loop-week-v1';
 export const REPORT_FIELDS = ['site', 'generated_at', 'state', 'published', 'indexed', 'pace', 'ai_visitors', 'ai_bot_hits', 'conversions', 'wins', 'undone', 'merged', 'held_by_cap', 'redirected', 'cap', 'notes', 'run_url'];
@@ -30,7 +31,7 @@ export function sumDaily(daily, key, today) {
   return total;
 }
 
-export function buildReport(cfg, { mode, effectivePace, notes = [], stopped = false, now = new Date(), check = {} } = {}) {
+export function buildReport(cfg, { mode, effectivePace, notes = [], stopped = false, now = new Date(), check = {}, ai = null } = {}) {
   const L = ledger(cfg);
   const today = centralDate(now);
   const book = L.pages();
@@ -67,6 +68,8 @@ export function buildReport(cfg, { mode, effectivePace, notes = [], stopped = fa
     // v1.6.0: hit rate per lane (pages measured at 2/4/8 weeks that reached the top 3),
     // the lane split and this site's can-be-#1 weights with their change log.
     lanes: lanesBlock(cfg, L, pages),
+    // v1.14.0 (additive): what the loop did about the AI answers that left this site out.
+    ai_misses: aiMissesBlock(L, { now, run: ai }),
     run_url: process.env.GITHUB_RUN_ID ? `${process.env.GITHUB_SERVER_URL || 'https://github.com'}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : null,
   };
   return r;
@@ -95,6 +98,7 @@ export function checkReport(r) {
       if (!x || !Number.isInteger(x.pages) || !Number.isInteger(x.measured) || !Number.isInteger(x.top3) || !(typeof x.hit_rate === 'number' || String(x.hit_rate).startsWith('not read: '))) p.push(`lanes.${l} must say pages, measured, top3 and hit_rate (a number or "not read: <reason>")`);
     }
   }
+  if (r && 'ai_misses' in r) p.push(...checkAiMissesBlock(r.ai_misses));
   if (r?.state === 'off' && !(r.notes || []).some((n) => n.includes(OFF_SENTENCE))) p.push(`an off report must say "${OFF_SENTENCE}"`);
   return p;
 }

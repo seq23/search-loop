@@ -7,7 +7,7 @@ import path from 'node:path';
 import { ledger } from './ledger.mjs';
 import { searchAnalytics, inspectUrl, dateDaysAgo } from './gsc.mjs';
 import { cloudflareDay } from './analytics.mjs';
-import { centralDate, isoWeek, daysBetween, sha256, fetchText, tokenOverlap, pastSoft, progress } from './util.mjs';
+import { centralDate, isoWeek, daysBetween, sha256, fetchText, tokenOverlap, pastSoft, progress, norm } from './util.mjs';
 import { render, withoutRelatedLink } from './render.mjs';
 import { gate } from './gate.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
@@ -16,12 +16,20 @@ import { verifyFacts, capRepeats, shapeGaps, defineLead } from './build.mjs';
 import { publishedFrozen } from './config.mjs';
 import { learnWeights } from './compete.mjs';
 import { refreshPages } from './refresh.mjs';
+import { aiLedger, actionFor, recordAction, saveAiLedger, samePage, ID_RE } from './ai-misses.mjs';
 
 export const CHECKPOINTS = [['w2', 14], ['w4', 28], ['w8', 56], ['d90', 90]];
 export const NEAR_PAGE_ONE = [10.5, 20];
 export const UNDO_IF_WORSE_BY = 2;
 export const STRENGTHEN_SETTLE_DAYS = 14;
 export const INDEX_WINDOW_DAYS = 14;
+export const AI_MISS_PAGES_PER_RUN = 3;
+// An AI-miss strengthen waits for a newer Boss OS read to settle; with none in 28 days it is
+// settled as not read, so the page is never stuck mid-strengthen (refresh comes at 30 days).
+export const AI_MISS_SETTLE_MAX_DAYS = 28;
+
+// Search Console strengthens a page once ever; an AI-miss strengthen does not use that up.
+const gscStrengthened = (page) => [page.strengthen, ...(page.strengthen_history || [])].some((s) => s && s.trigger !== 'ai_miss');
 
 export function dueCheckpoints(page, today) {
   const age = daysBetween(page.published_at, today);
@@ -34,9 +42,12 @@ export function decide(page, snap, { rules, today }) {
   if (snap.clicks > 0 || (snap.position && snap.position <= 10)) out.push('winner');
   const s = page.strengthen;
   if (s && !s.verdict && daysBetween(s.at, today) >= STRENGTHEN_SETTLE_DAYS && snap.position != null && s.baseline_position != null) {
-    out.push(snap.position > s.baseline_position + UNDO_IF_WORSE_BY ? (rules.undo ? 'undo' : 'hold') : 'keep');
+    const worse = snap.position > s.baseline_position + UNDO_IF_WORSE_BY;
+    // An AI-miss strengthen is kept by the next AI read (settleAiMisses); Search Console can only undo it.
+    if (worse) out.push(rules.undo ? 'undo' : 'hold');
+    else if (s.trigger !== 'ai_miss') out.push('keep');
   }
-  if (!s && rules.strengthen && snap.position != null && snap.position >= NEAR_PAGE_ONE[0] && snap.position <= NEAR_PAGE_ONE[1] && ['w4', 'w8'].includes(snap.checkpoint)) out.push('strengthen');
+  if (!(s && !s.verdict) && !gscStrengthened(page) && rules.strengthen && snap.position != null && snap.position >= NEAR_PAGE_ONE[0] && snap.position <= NEAR_PAGE_ONE[1] && ['w4', 'w8'].includes(snap.checkpoint)) out.push('strengthen');
   if (snap.checkpoint === 'd90' && snap.impressions === 0 && snap.source === 'search_console' && rules.merge) out.push('merge');
   return out;
 }
@@ -64,7 +75,7 @@ async function gscPages(cfg, now, fetchImpl) {
   return { map, site };
 }
 
-export async function check(cfg, { rules: modeRules, mode, now = new Date(), fetchImpl = fetch, chat = freeChat, notes = [] } = {}) {
+export async function check(cfg, { rules: modeRules, mode, now = new Date(), fetchImpl = fetch, chat = freeChat, notes = [], ai = null } = {}) {
   const L = ledger(cfg);
   const today = centralDate(now);
   // Published pages frozen (Horse, Hicks): checkpoints are still measured and
@@ -110,7 +121,10 @@ export async function check(cfg, { rules: modeRules, mode, now = new Date(), fet
     else { for (const p of pending) if (liveUrls.includes(p.url)) p.indexnow_at = today; res.indexnow = r.submitted; }
   } else if (pending.length) notes.push(`IndexNow: ${pending.length} new page(s) not live yet; submitted when they answer 200`);
 
-  if (res.skipped) { L.write('pages', book); return res; }
+  if (res.skipped) {
+    if (ai?.ok) for (const m of ai.misses) if (m.page_url) ai.skipped.push({ id: m.id, reason: `CHECK runs weekly in mode=${mode} and did not run today` });
+    L.write('pages', book); return res;
+  }
 
   progress('check', `Search Console rows for ${live.length} live page(s)`);
   const g = live.length ? await gscPages(cfg, now, fetchImpl) : { map: new Map() };
@@ -163,10 +177,18 @@ export async function check(cfg, { rules: modeRules, mode, now = new Date(), fet
         if (act === 'winner' && !p.winner) { p.winner = today; res.wins++; winners.topics = [...new Set([p.query, ...(winners.topics || [])])].slice(0, 30); }
         if (act === 'keep') p.strengthen.verdict = { at: today, kept: true, position: snap.position };
         if (act === 'undo') { undo(cfg, L, p, today, snap); res.undone++; }
-        if (act === 'strengthen') { if (await strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, notes })) res.strengthened++; }
+        if (act === 'strengthen') { if ((await strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, notes })).ok) res.strengthened++; }
         if (act === 'merge') { if (merge(cfg, p, index, g.map, consolidation, book, today, notes)) res.merged++; }
       }
     }
+  }
+  // v1.14.0 AI answer misses: settle earlier AI-miss strengthens, then strengthen the pages
+  // ChatGPT, Gemini or AI Overviews left out (no Search Console position gate; same gate,
+  // snapshot and undo). Before REFRESH, so a page strengthened here is not refreshed today.
+  if (ai) {
+    settleAiMisses(live, ai, { today, notes });
+    res.ai_misses = await strengthenAiMisses(cfg, L, live, ai, { today, now, rules, mode, chat, fetchImpl, index, notes, g });
+    res.strengthened += res.ai_misses.strengthened;
   }
   // v1.10.0 REFRESH: due pages get their sources re-checked and one real-search question; a date
   // moves only with a change (risk rule R-ADV-12). Never on a frozen site.
@@ -244,35 +266,112 @@ export function reshape(cfg, L, p, { today, index = [], notes = [] }) {
   return true;
 }
 
-async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, notes }) {
+// Strengthen one page: 1-2 new sections and 1 FAQ from the free model, through the same gate,
+// snapshot (undo restores those bytes) and render as BUILD. `target` (v1.14.0) is an AI-miss
+// brief: the prompts the AI answers left the site out of and the sources they cited, in place
+// of the page's Search Console queries. Nothing new from the model -> the page, its draft and
+// its dates are left exactly as they were (R-ADV-12: no fake freshness).
+// Returns {ok:true} or {ok:false, why:'missing'|'model'|'nothing'|'gate', reason}.
+async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, notes, target = null }) {
   const draftFile = path.join(L.dir, 'drafts', `${p.slug}.json`);
   const file = path.join(cfg.root, p.rel);
-  if (!fs.existsSync(draftFile) || !fs.existsSync(file)) return false;
+  if (!fs.existsSync(draftFile) || !fs.existsSync(file)) return { ok: false, why: 'missing', reason: 'no saved draft or page file to strengthen' };
   const draft = JSON.parse(fs.readFileSync(draftFile, 'utf8'));
-  const site = cfg.gsc?.site_url || process.env[cfg.gsc?.site_url_env || 'GSC_SITE_URL'];
-  const q = await searchAnalytics(site, { startDate: dateDaysAgo(31), endDate: dateDaysAgo(3), dimensions: ['query'], dimensionFilterGroups: [{ filters: [{ dimension: 'page', operator: 'equals', expression: p.url }] }], rowLimit: 20 }, { fetchImpl });
-  const queries = [...new Set([...(q.ok ? q.rows.map((r) => r.keys[0]) : [p.query]), ...(p.extra_queries || [])])];
+  let queries; let ask;
+  if (target?.kind === 'ai_miss') {
+    queries = [...new Set(target.prompts)];
+    const cited = [...new Set(target.sources)].slice(0, 8);
+    ask = `ChatGPT, Gemini or Google AI Overviews answer these buyer questions without naming this page: ${queries.join(' | ')}.\n${cited.length ? `The answers cite: ${cited.join(' ')} (context only; never copy them or name them as sources).\n` : ''}Write what this page is missing to answer those questions directly and completely.`;
+  } else {
+    const site = cfg.gsc?.site_url || process.env[cfg.gsc?.site_url_env || 'GSC_SITE_URL'];
+    const q = await searchAnalytics(site, { startDate: dateDaysAgo(31), endDate: dateDaysAgo(3), dimensions: ['query'], dimensionFilterGroups: [{ filters: [{ dimension: 'page', operator: 'equals', expression: p.url }] }], rowLimit: 20 }, { fetchImpl });
+    queries = [...new Set([...(q.ok ? q.rows.map((r) => r.keys[0]) : [p.query]), ...(p.extra_queries || [])])];
+    ask = `The page "${draft.h1}" sits just off page one for: ${queries.join(' | ')}.`;
+  }
   const r = await chat({ cfg, fetchImpl, messages: [
     { role: 'system', content: `You improve one page for ${cfg.site_name}. Audience: ${cfg.audience}. Voice: ${cfg.voice}. Return ONLY JSON.` },
-    { role: 'user', content: `The page "${draft.h1}" sits just off page one for: ${queries.join(' | ')}.\nIts sections: ${draft.sections.map((s) => s.heading).join(' | ')}.\nReturn {"sections":[{"heading":"a question from the searches not yet answered","paragraphs":["120-180 words"]}],"faq":[{"q":"...","a":"40-60 words"}]} with 1-2 new sections and 1 new FAQ. No statistics, named people, credentials, reviews or outcome promises.` },
+    { role: 'user', content: `${ask}\nThe page is "${draft.h1}". Its sections: ${draft.sections.map((s) => s.heading).join(' | ')}.\nReturn {"sections":[{"heading":"a question from the searches not yet answered","paragraphs":["120-180 words"]}],"faq":[{"q":"...","a":"40-60 words"}]} with 1-2 new sections and 1 new FAQ. No statistics, named people, credentials, reviews or outcome promises.` },
   ] });
-  if (!r.ok) { notes.push(`strengthen skipped for ${p.route}: ${r.reason}`); return false; }
+  if (!r.ok) { notes.push(`strengthen skipped for ${p.route}: ${r.reason}`); return { ok: false, why: 'model', reason: r.reason }; }
   const add = parseJsonAnswer(r.answer) || {};
-  const next = capRepeats({ ...draft, sections: [...draft.sections, ...(add.sections || []).filter((s) => s?.heading && s?.paragraphs?.length).slice(0, 2)], faq: [...draft.faq, ...(add.faq || []).filter((f) => f?.q && f?.a)].slice(0, 6) });
+  const had = new Set([...draft.sections.map((s) => norm(s.heading)), ...draft.faq.map((f) => norm(f.q))]);
+  const newSections = (Array.isArray(add.sections) ? add.sections : []).filter((s) => typeof s?.heading === 'string' && Array.isArray(s.paragraphs) && s.paragraphs.length && !had.has(norm(s.heading))).slice(0, 2);
+  const newFaq = (Array.isArray(add.faq) ? add.faq : []).filter((f) => typeof f?.q === 'string' && typeof f?.a === 'string' && f.q && f.a && !had.has(norm(f.q)));
+  const next = capRepeats({ ...draft, sections: [...draft.sections, ...newSections], faq: [...draft.faq, ...newFaq].slice(0, 6) });
+  if (JSON.stringify([next.sections, next.faq]) === JSON.stringify([draft.sections, draft.faq])) {
+    notes.push(`strengthen of ${p.route}: the model added nothing new; the page and its dates are unchanged`);
+    return { ok: false, why: 'nothing', reason: 'the model added nothing new; the page and its dates are unchanged' };
+  }
   next.facts = await verifyFacts(next.facts || [], fetchImpl);
   const before = fs.readFileSync(file, 'utf8');
   const relatedLinks = [...before.matchAll(/data-search-loop="related"[\s\S]*?<\/section>/g)].flatMap((m) => [...m[0].matchAll(/href="([^"]+)">([^<]+)</g)].map((x) => ({ route: x[1], anchor: x[2] })));
   const html = render(cfg, { slug: p.slug, draft: next, related: relatedLinks, published: p.published_at, modified: today });
   const problems = gate({ query: p.query, html, facts: next.facts }, { cfg, corpus: index, selfRoute: p.route });
-  if (problems.length) { notes.push(`strengthen of ${p.route} failed the gate, left as it was: ${problems.slice(0, 2).join('; ')}`); return false; }
+  if (problems.length) { notes.push(`strengthen of ${p.route} failed the gate, left as it was: ${problems.slice(0, 2).join('; ')}`); return { ok: false, why: 'gate', reason: `failed the gate, left as it was: ${problems.slice(0, 2).join('; ')}` }; }
   const bh = sha256(before);
   fs.mkdirSync(path.dirname(L.snapshotPath(bh)), { recursive: true });
   fs.writeFileSync(L.snapshotPath(bh), before);
   fs.writeFileSync(file, html);
   fs.writeFileSync(draftFile, JSON.stringify(next, null, 2) + '\n');
   p.modified_at = today;
-  p.strengthen = { at: today, before_hash: bh, after_hash: sha256(html), baseline_position: snap.position, queries };
-  return true;
+  if (p.strengthen) p.strengthen_history = [...(p.strengthen_history || []), p.strengthen].slice(-10);
+  p.strengthen = { at: today, before_hash: bh, after_hash: sha256(html), baseline_position: snap.position ?? null, queries, ...(target?.kind === 'ai_miss' ? { trigger: 'ai_miss', ai_miss_ids: target.ids, week: target.week } : {}) };
+  return { ok: true };
+}
+
+// An AI-miss strengthen settles once Boss OS has read a newer week: no longer listed ->
+// kept:'ai_miss'; still listed -> kept, still_missed (Boss OS counts fix_attempts). A null
+// Search Console baseline never blocks this. No newer read in 28 days -> settled as not read.
+export function settleAiMisses(live, ai, { today, notes = [] }) {
+  for (const p of live) {
+    const s = p.strengthen;
+    if (!s || s.verdict || s.trigger !== 'ai_miss') continue;
+    const age = daysBetween(s.at, today);
+    if (age < STRENGTHEN_SETTLE_DAYS) continue;
+    if (ai?.ok && String(ai.week) > String(s.week)) {
+      const listed = new Set([...ai.misses.map((m) => m.id), ...ai.rejected.map((r) => r.id)]);
+      const still = (s.ai_miss_ids || []).filter((id) => listed.has(id));
+      s.verdict = still.length ? { at: today, kept: true, still_missed: still, week: ai.week } : { at: today, kept: 'ai_miss', week: ai.week };
+      notes.push(`AI misses: ${p.route} ${still.length ? `is still left out of ${still.length} AI answer(s) in ${ai.week}` : `is no longer listed as missed in ${ai.week}`}`);
+    } else if (age >= AI_MISS_SETTLE_MAX_DAYS) {
+      s.verdict = { at: today, kept: true, ai_miss: `not read: no newer read of AI answer misses in ${AI_MISS_SETTLE_MAX_DAYS} days` };
+    }
+  }
+}
+
+// One action per miss id per Boss OS week (ledger ai-misses.json). A skip a later run could
+// clear is left unrecorded (ai.skipped, this run's report only) so that run acts.
+export async function strengthenAiMisses(cfg, L, live, ai, { today, rules, mode, chat, fetchImpl, index, notes, g }) {
+  const out = { strengthened: 0, pages: [] };
+  if (!ai.ok) return out;
+  const book = aiLedger(L);
+  for (const r of ai.rejected) if (ID_RE.test(r.id)) recordAction(book, ai.week, r.id, { action: 'rejected', reason: r.reason, at: today });
+  const groups = new Map();
+  for (const m of ai.misses) {
+    if (!m.page_url || actionFor(book, ai.week, m.id)) continue;
+    const p = live.find((x) => samePage(x.url, m.page_url));
+    if (!p) { recordAction(book, ai.week, m.id, { action: 'skipped', reason: 'not an engine page', page_url: m.page_url, at: today }); continue; }
+    if (!groups.has(p.slug)) groups.set(p.slug, { p, misses: [] });
+    groups.get(p.slug).misses.push(m);
+  }
+  let done = 0;
+  for (const { p, misses } of groups.values()) {
+    const later = (reason) => { for (const m of misses) ai.skipped.push({ id: m.id, reason }); };
+    const once = (action, reason) => { for (const m of misses) recordAction(book, ai.week, m.id, { action, page_url: p.url, at: today, ...(reason ? { reason } : {}) }); };
+    const s = p.strengthen;
+    if (!rules.strengthen) { later(`mode=${mode} does not strengthen pages`); continue; }
+    // At most one strengthen per page per 14 days: one settles no sooner than STRENGTHEN_SETTLE_DAYS.
+    if (s && !s.verdict) { later(`a strengthen on this page from ${s.at} is still settling (at most one per page per ${STRENGTHEN_SETTLE_DAYS} days)`); continue; }
+    if (done >= AI_MISS_PAGES_PER_RUN) { later(`this run's limit of ${AI_MISS_PAGES_PER_RUN} AI-miss strengthens was reached; the next run takes it`); continue; }
+    if (pastSoft()) { later("the run's time budget was used; the next run takes it"); continue; }
+    const position = g?.map?.get(p.url)?.position ?? null;
+    const r = await strengthen(cfg, L, p, { position }, { today, chat, fetchImpl, index, notes, target: { kind: 'ai_miss', ids: misses.map((m) => m.id), prompts: misses.map((m) => m.prompt), sources: misses.flatMap((m) => m.cited_sources), week: ai.week } });
+    if (r.ok) { done++; out.strengthened++; out.pages.push(p.url); once('strengthened'); notes.push(`AI misses: strengthened ${p.route} for ${misses.length} AI answer miss(es)`); }
+    else if (r.why === 'model') later(`no free model answered (${r.reason})`);
+    else once('skipped', r.reason);
+  }
+  saveAiLedger(L, book);
+  return out;
 }
 
 function merge(cfg, p, index, gmap, consolidation, book, today, notes) {

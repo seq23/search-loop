@@ -280,6 +280,122 @@
           "type": "string"
         }
       }
+    },
+    "ai_misses": {
+      "type": "object",
+      "description": "v1.14.0 (optional; older engines omit it): the buyer questions where ChatGPT, Gemini or Google AI Overviews left this site out, read from Boss OS, and what the loop did about them in the last 7 days. read = \"ok\" or \"not read: <reason>\" (a failed read is never \"no misses\"). strengthened = engine pages strengthened for a miss; new_candidates = misses with no page that fits, queued as new searches through every FIND and BUILD gate; skipped and rejected say why.",
+      "required": [
+        "read",
+        "strengthened",
+        "new_candidates",
+        "skipped",
+        "rejected",
+        "could_not_tell"
+      ],
+      "properties": {
+        "read": {
+          "type": "string",
+          "pattern": "^(ok|not read: .+)$"
+        },
+        "week": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "misses": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "strengthened": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "page_url",
+              "at"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "page_url": {
+                "type": "string",
+                "pattern": "^https?://"
+              },
+              "at": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "new_candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "prompt",
+              "at"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "reason"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "rejected": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "reason"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "could_not_tell": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "reads in the last 7 days that could not tell (timeout, refused token, bad body, not_read)"
+        }
+      }
     }
   }
 }

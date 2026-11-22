@@ -13,7 +13,9 @@ import { buildReport, checkReport } from '../src/report.mjs';
 import { currentCap, impressionWindows, nextCap } from '../src/cap.mjs';
 import { perDayLimit } from '../src/build.mjs';
 import { ledger } from '../src/ledger.mjs';
-import { NamedStop, EXIT, isoWeek, writeJson, startClock, progress, runClock } from '../src/util.mjs';
+import { readAiMisses, aiLedger, actionFor, recordAction, recordRead, saveAiLedger } from '../src/ai-misses.mjs';
+import { publishedFrozen } from '../src/config.mjs';
+import { NamedStop, EXIT, isoWeek, centralDate, writeJson, startClock, progress, runClock } from '../src/util.mjs';
 import { selfTest } from '../src/self-test.mjs';
 import { draftSlot } from '../src/slot.mjs';
 import { resetLanes, noFreeModelStreak, loadRouting } from '../src/llm.mjs';
@@ -58,16 +60,47 @@ export async function run(opts) {
   const L = ledger(cfg);
   const did = { find: null, build: null, check: null };
 
+  // AI answer misses (v1.14.0): read once from Boss OS, before FIND. Any failed read is
+  // "could not tell" for this run (a note and the report's ai_misses.read), never "no misses";
+  // the rest of the run goes on as before.
+  const today = centralDate(now);
+  const frozen = publishedFrozen(cfg);
+  let ai = null;
+  if (stage !== 'report') {
+    progress('ai-misses', 'reading AI answer misses from Boss OS');
+    ai = { ...(await readAiMisses(cfg, { fetchImpl: opts.fetchImpl })), skipped: [] };
+    const book = aiLedger(L);
+    recordRead(book, ai, now);
+    if (!ai.ok) notes.push(`not read: AI answer misses (${ai.reason}); could not tell this run`);
+    else {
+      if (ai.rejected.length) notes.push(`AI misses: ${ai.rejected.length} row(s) rejected, never fetched or edited (${ai.rejected.slice(0, 3).map((r) => r.reason).join('; ')})`);
+      // Frozen sites (Horse, Hicks): every miss is recorded, nothing is built or changed for it.
+      if (frozen) for (const m of ai.misses) recordAction(book, ai.week, m.id, { action: 'skipped', reason: 'published pages are frozen on this site; the miss is recorded only', ...(m.page_url ? { page_url: m.page_url } : {}), at: today });
+    }
+    saveAiLedger(L, book);
+  }
+  // A miss with no page that fits becomes a FIND candidate, once per Boss OS week.
+  const noPage = ai?.ok && !frozen ? ai.misses.filter((m) => !m.page_url && !actionFor(aiLedger(L), ai.week, m.id)) : [];
+
   // FIND weekly (never in off).
   const t = L.read('targets', null);
   // BUILD with no target list (fresh checkout, a replay after main moved) finds first.
-  const wantFind = stage === 'find' || (['auto', 'build'].includes(stage) && rulesFor(mode).find === 'weekly' && (!t || (stage === 'auto' && t.week !== isoWeek(now))));
+  // A new AI miss with no page runs FIND again that day, so it is not left for next week.
+  const wantFind = stage === 'find' || (['auto', 'build'].includes(stage) && rulesFor(mode).find === 'weekly' && (!t || (stage === 'auto' && t.week !== isoWeek(now)) || noPage.length > 0));
   if (wantFind && rulesFor(mode).find !== 'never') {
     progress('find', 'start');
-    did.find = await find(cfg, { fetchImpl: opts.fetchImpl, now, chat: opts.chat });
+    did.find = await find(cfg, { fetchImpl: opts.fetchImpl, now, chat: opts.chat, aiMisses: noPage });
     for (const [k, v] of Object.entries(did.find.sources)) if (String(v).startsWith('not read')) notes.push(`FIND ${k}: ${v}`);
     notes.push(...(did.find.notes || []));
-  } else if (stage === 'find') notes.push(`FIND skipped: mode=${mode}`);
+    if (noPage.length) {
+      const book = aiLedger(L);
+      for (const m of noPage) { const o = did.find.ai_misses.get(m.id); if (o) recordAction(book, ai.week, m.id, { ...o, at: today }); }
+      saveAiLedger(L, book);
+    }
+  } else {
+    if (stage === 'find') notes.push(`FIND skipped: mode=${mode}`);
+    for (const m of noPage) ai.skipped.push({ id: m.id, reason: `FIND does not run in mode=${mode} at stage ${stage}` });
+  }
 
   // CAP weekly, before BUILD: the per-site cap moves only with Google impressions.
   if ((stage === 'auto' || stage === 'build') && rulesFor(mode).build) {
@@ -88,7 +121,7 @@ export async function run(opts) {
   }
   // CHECK + REPAIR (daily; weekly in slow; still runs in off).
   if (stage === 'auto' || stage === 'check') progress('check', 'start');
-  if (stage === 'auto' || stage === 'check') did.check = await check(cfg, { rules: rulesFor(mode), mode, now, fetchImpl: opts.fetchImpl, chat: opts.chat, notes });
+  if (stage === 'auto' || stage === 'check') did.check = await check(cfg, { rules: rulesFor(mode), mode, now, fetchImpl: opts.fetchImpl, chat: opts.chat, notes, ai: frozen ? null : ai });
 
   // NO_FREE_MODEL: a run where every free lane was out and nothing was
   // published is a NAMED NOTE (job summary + weekly report), exit 0: the
@@ -109,13 +142,13 @@ export async function run(opts) {
   progress('report', 'writing');
   const rules = rulesFor(mode);
   const effectivePace = perDayLimit(cfg, rules);
-  const nothing = !did.find && !(did.build?.published) && !(did.build?.attempted) && !(did.build?.redirected) && !(did.build?.held) && !(did.check?.checked) && !(did.check?.measured) && !(did.check?.indexnow) && !did.check?.skipped;
-  const report = buildReport(cfg, { mode, effectivePace, notes, stopped: Boolean(did.build?.stopped), now, check: did.check || {} });
+  const nothing = !did.find && !(did.build?.published) && !(did.build?.attempted) && !(did.build?.redirected) && !(did.build?.held) && !(did.check?.checked) && !(did.check?.measured) && !(did.check?.indexnow) && !did.check?.skipped && !(did.check?.ai_misses?.strengthened);
+  const report = buildReport(cfg, { mode, effectivePace, notes, stopped: Boolean(did.build?.stopped), now, check: did.check || {}, ai });
   const rp = checkReport(report);
   if (rp.length) throw new NamedStop('REPORT_SHAPE', rp.join('; '), EXIT.PROBLEMS);
   const out = path.resolve(root, opts['report-out'] || path.join(cfg.ledger_dir, 'search-loop-week.json'));
   writeJson(out, report);
-  const census = `search-loop ${cfg.site}: mode=${mode} find=${did.find ? `${did.find.targets} targets${did.find.priority ? ` (${did.find.priority} priority)` : ''}` : 'skipped'} published=${did.build?.published ?? 0}/${did.build?.quota ?? 0} held_by_cap=${did.build?.held ?? 0} redirected=${did.build?.redirected ?? 0} dropped=${did.build?.dropped ?? 0} related_links=${did.build?.related_links ?? 0} checked=${did.check?.checked ?? 0} measured=${did.check?.measured ?? 0} wins=${did.check?.wins ?? 0} strengthened=${did.check?.strengthened ?? 0} undone=${did.check?.undone ?? 0} merged=${did.check?.merged ?? 0} refreshed=${did.check?.refresh?.refreshed ?? 0}/${did.check?.refresh?.due ?? 0} indexnow=${did.check?.indexnow ?? 0} report=${path.relative(root, out)}`;
+  const census = `search-loop ${cfg.site}: mode=${mode} find=${did.find ? `${did.find.targets} targets${did.find.priority ? ` (${did.find.priority} priority)` : ''}` : 'skipped'} published=${did.build?.published ?? 0}/${did.build?.quota ?? 0} held_by_cap=${did.build?.held ?? 0} redirected=${did.build?.redirected ?? 0} dropped=${did.build?.dropped ?? 0} related_links=${did.build?.related_links ?? 0} checked=${did.check?.checked ?? 0} measured=${did.check?.measured ?? 0} wins=${did.check?.wins ?? 0} strengthened=${did.check?.strengthened ?? 0} undone=${did.check?.undone ?? 0} merged=${did.check?.merged ?? 0} refreshed=${did.check?.refresh?.refreshed ?? 0}/${did.check?.refresh?.due ?? 0} indexnow=${did.check?.indexnow ?? 0} ai_misses=${!ai ? 'skipped' : ai.ok ? `${ai.misses.length}/strengthened:${report.ai_misses.strengthened.length}/new:${report.ai_misses.new_candidates.length}/skipped:${report.ai_misses.skipped.length}/rejected:${report.ai_misses.rejected.length}` : 'could_not_tell'} report=${path.relative(root, out)}`;
   return { report, census, nothing, mode, did, out, root, cfg };
 }
 
