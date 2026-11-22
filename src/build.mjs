@@ -344,7 +344,9 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
       const post = matchIntent(cfg, draft.h1, corpus) || matchAnswer(cfg, draft.direct_answer, answers);
       if (post) { draft = null; html = null; problems = null; target.__redirect = post; break; }
       ({ problems, notes: gateNotes } = gateReport({ query: target.query, html, facts: draft.facts }, { cfg, corpus: index, siblings, selfRoute: route }));
-      if (!draft.facts_heading && draft.facts.some((f) => f.verified)) problems.push('facts: needs a facts_heading that says, in the page\'s voice, what the facts help the reader do');
+      // A missing heading is asked for again, but on the last try it is a note: the page still
+      // shows its facts, below the FAQ under "Sources" (render.mjs), so it ships rather than drops.
+      if (!draft.facts_heading && draft.facts.some((f) => f.verified)) (attempt < MAX_ATTEMPTS - 1 ? problems : gateNotes).push('facts: needs a facts_heading that says, in the page\'s voice, what the facts help the reader do');
       if (!problems.length) {
         // v1.9.2: a passing draft whose answer still defines nothing is asked for once more; it is kept
         // (with its gate note) if that try does not come back better.
