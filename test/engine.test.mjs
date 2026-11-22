@@ -915,3 +915,16 @@ test('BUILD names related pages to the model by their H1, not the "Title | Site"
   const m = draftPrompt(cfg, { query: 'how to plan a week' }, [{ route: '/weekly-review/', h1: 'How to run a weekly review', title: `Weekly review | ${cfg.site_name}` }, { route: '/x/', title: `Planning basics — ${cfg.site_name}` }], null);
   assert.match(m[1].content, /mention by name \(do not invent others\): How to run a weekly review \| Planning basics\n/);
 });
+
+test('a draft that never gives a facts_heading is asked again, then published with its facts under "Sources"', async () => {
+  const root = site();
+  const calls = [];
+  const noHeading = async (args) => { const d = JSON.parse((await distinctChat(calls)(args)).answer); delete d.facts_heading; return { ok: true, answer: JSON.stringify(d) }; };
+  const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch({ gscRows: [{ keys: ['how to plan my week as a founder', 'https://example.com/weekly-planning/'], clicks: 0, impressions: 40, position: 12 }] }), chat: noHeading });
+  assert.ok(r.did.build.published > 0, `published: ${r.report.notes.join(' | ')}`);
+  assert.ok(calls.some((m) => /needs a facts_heading/.test(m[1].content)), 'the missing heading was asked for again');
+  const p = JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pages.json'))).pages.find((x) => x.status === 'live');
+  assert.match(JSON.stringify(p.gate_notes), /facts_heading/);
+  const html = fs.readFileSync(path.join(root, p.rel), 'utf8');
+  assert.match(html, /<section data-search-loop="facts"><h2>Sources<\/h2>/);
+});

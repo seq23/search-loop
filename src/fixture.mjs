@@ -47,6 +47,7 @@ export function fixtureDraft() {
       { q: 'What tool should I use?', a: 'Use the tool you already open every day, whether that is a calendar, a notebook or a notes app. The routine matters far more than the tool. Switching tools often feels productive, but it usually resets the habit you were trying to build.' },
       { q: 'What do I do after a missed week?', a: 'Do not try to catch up on everything. Look at what still matters, carry the most important outcome into this week, and drop the rest without guilt. A missed week is information about your load, not a reason to rebuild your whole system.' },
     ],
+    facts_heading: 'How the weeks are counted',
     facts: [{ claim: 'The ISO 8601 standard numbers weeks so that each week starts on a Monday.', source_url: 'https://en.wikipedia.org/wiki/ISO_week_date', source_name: 'Wikipedia', verified: true }, { claim: 'The Gregorian calendar is the most widely used civil calendar.', source_url: 'https://en.wikipedia.org/wiki/Gregorian_calendar', source_name: 'Wikipedia', verified: true }],
   };
 }

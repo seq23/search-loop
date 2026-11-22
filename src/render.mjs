@@ -76,7 +76,14 @@ export function publisherNode(cfg) {
   return { '@type': 'Organization', name: p.name || cfg.site_name, url: p.url || cfg.base_url, ...(p.logo ? { logo: p.logo } : {}), ...(sameAs.length ? { sameAs } : {}) };
 }
 
-// draft: { h1, title_lead, meta_description, direct_answer, sections[{heading, paragraphs[], bullets?[]}], faq[{q,a}], facts[{claim, source_url, source_name, verified}] }
+// v1.13.0: the sourced facts are written by the model as reader-useful lines under its own
+// heading (p-n-p #223 review sr_mwrbmeq6vzb3: a fixed "What the sources say" over town trivia
+// read as machine-made). The source link is kept small after each line.
+function factsBlock(heading, facts) {
+  return `<section data-search-loop="facts"><h2>${esc(heading)}</h2><ul>${facts.map((f) => `<li>${esc(f.claim)} <small>(<a href="${esc(f.source_url)}" rel="noopener">${esc(f.source_name || new URL(f.source_url).hostname)}</a>)</small></li>`).join('')}</ul></section>`;
+}
+
+// draft: { h1, title_lead, meta_description, direct_answer, sections[{heading, paragraphs[], bullets?[]}], faq[{q,a}], facts_heading, facts[{claim, source_url, source_name, verified}] }
 export function render(cfg, { slug, draft, related = [], published, modified }) {
   const url = pageUrl(cfg, slug);
   const title = fitTitle(cfg, draft);
@@ -107,8 +114,11 @@ export function render(cfg, { slug, draft, related = [], published, modified }) 
     `<p class="direct-answer">${esc(draft.direct_answer)}</p>`,
     `<p class="page-dates">Published <time datetime="${published}">${humanDate(published)}</time>${modified && modified !== published ? ` · Updated <time datetime="${modified}">${humanDate(modified)}</time>` : ''} · ${cfg.author?.name ? `By ${cfg.author.url ? `<a href="${esc(cfg.author.url)}">${esc(cfg.author.name)}</a>` : esc(cfg.author.name)}` : esc(cfg.publisher?.name || cfg.site_name)}</p>`,
     ...draft.sections.map((s) => `<section><h2>${esc(s.heading)}</h2>${s.paragraphs.map((x) => `<p>${esc(x)}</p>`).join('')}${(s.bullets || []).length ? `<${list}>${s.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</${list}>` : ''}</section>`),
-    facts.length ? `<section data-search-loop="facts"><h2>What the sources say</h2><ul>${facts.map((f) => `<li>${esc(f.claim)} (<a href="${esc(f.source_url)}" rel="noopener">${esc(f.source_name || new URL(f.source_url).hostname)}</a>)</li>`).join('')}</ul></section>` : '',
+    ...(facts.length && draft.facts_heading ? [factsBlock(draft.facts_heading, facts)] : []),
     `<section class="faq"><h2>Frequently asked questions</h2>${draft.faq.map((f) => `<h3>${esc(f.q)}</h3><p>${esc(f.a)}</p>`).join('')}</section>`,
+    // v1.13.0: a draft with no model-written heading (older drafts) keeps its sources, below the
+    // FAQ under a plain label, so no fixed heading sits in the middle of the page.
+    ...(facts.length && !draft.facts_heading ? [factsBlock('Sources', facts)] : []),
     related.length ? `<section data-search-loop="related"><h2>Related questions</h2><ul>${related.map((r) => `<li><a href="${esc(r.route)}">${esc(r.anchor)}</a></li>`).join('')}</ul></section>` : '',
     `<p class="site-action"><a class="button" href="${esc(actionHref)}">${esc(cfg.action.label)}</a></p>`,
   ].join('\n');
