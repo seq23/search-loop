@@ -85,6 +85,23 @@ test('a real search becomes a question on the page, and only then the date moves
   assert.deepEqual(p.refreshed.changes, ['question added from a real search: "weekly planning on a sunday evening"']);
 });
 
+test('a page edited by hand after its draft was saved is not refreshed: the edit is kept and the reason recorded', async () => {
+  const { root, cfg, L, p } = pageSite();
+  const file = path.join(root, p.rel);
+  const draft = JSON.parse(fs.readFileSync(path.join(L.dir, 'drafts', 'plan.json'), 'utf8'));
+  // A hand fix in the page (as keepmyproof #46 did on 14 Nov 2026); the draft still has the old words.
+  const hand = fs.readFileSync(file, 'utf8').replace(`<p>${draft.sections[0].paragraphs[0]}</p>`, '<p>A hand-corrected paragraph that the saved draft does not have.</p>');
+  assert.notEqual(hand, fs.readFileSync(file, 'utf8'), 'the fixture made a hand edit');
+  fs.writeFileSync(file, hand);
+  const calls = [];
+  const res = await refreshPages(cfg, L, [p], { today: '2026-11-10', now: new Date('2026-11-10T15:00:00Z'), rules: { strengthen: true }, chat: async (a) => { calls.push(a); return answerChat(); }, fetchImpl: gscFetch([{ query: 'weekly planning on a sunday evening', impressions: 6 }]) });
+  assert.equal(res.refreshed, 0);
+  assert.equal(fs.readFileSync(file, 'utf8'), hand, 'the hand edit is kept');
+  assert.equal(calls.length, 0, 'no model call for a page that will not be re-rendered');
+  assert.equal(p.modified_at, undefined);
+  assert.match(p.refreshed.left.join(' '), /edited after its draft was saved/);
+});
+
 test('nothing to fix: the page file, its hash and its dates are left alone (negative proof)', async () => {
   const { root, cfg, L, p } = pageSite();
   const before = fs.readFileSync(path.join(root, p.rel), 'utf8');

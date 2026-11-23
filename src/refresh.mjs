@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { searchAnalytics, dateDaysAgo } from './gsc.mjs';
 import { daysBetween, sha256, fetchText, norm, contentWords, pastSoft, progress } from './util.mjs';
-import { render } from './render.mjs';
+import { render, relatedLinksOf, draftDrift, EDITED_PAGE } from './render.mjs';
 import { gate } from './gate.mjs';
 import { parseJsonAnswer } from './llm.mjs';
 
@@ -114,6 +114,8 @@ export async function refreshPages(cfg, L, live, { today, now = new Date(), rule
     res.checked++;
     if (!fs.existsSync(draftFile) || !fs.existsSync(file)) { p.refreshed = { at: today, changes: [], left: 'no saved draft or page file' }; continue; }
     const draft = JSON.parse(fs.readFileSync(draftFile, 'utf8'));
+    const drift = draftDrift(fs.readFileSync(file, 'utf8'), draft);
+    if (drift.length) { p.refreshed = { at: today, changes: [], left: [`${EDITED_PAGE} (${drift[0]})`] }; notes.push(`REFRESH: ${p.route} ${EDITED_PAGE}`); continue; }
     const changes = []; const left = [];
     let next = { ...draft };
     const src = await recheckSources(draft.facts || [], fetchImpl);
@@ -134,7 +136,7 @@ export async function refreshPages(cfg, L, live, { today, now = new Date(), rule
     }
     if (!changes.length) { p.refreshed = { at: today, changes: [], ...(left.length ? { left } : {}) }; continue; }
     const before = fs.readFileSync(file, 'utf8');
-    const relatedLinks = [...before.matchAll(/data-search-loop="related"[\s\S]*?<\/section>/g)].flatMap((m) => [...m[0].matchAll(/href="([^"]+)">([^<]+)</g)].map((x) => ({ route: x[1], anchor: x[2] })));
+    const relatedLinks = relatedLinksOf(before);
     const html = render(cfg, { slug: p.slug, draft: next, related: relatedLinks, published: p.published_at, modified: today });
     const was = new Set(gate({ query: p.query, html: before, facts: draft.facts || [] }, { cfg, corpus: index, selfRoute: p.route }));
     const problems = gate({ query: p.query, html, facts: next.facts || [] }, { cfg, corpus: index, selfRoute: p.route }).filter((x) => !was.has(x));

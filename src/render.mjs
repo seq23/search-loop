@@ -1,5 +1,5 @@
 // Page HTML from a draft. One renderer; the gate reads what it writes.
-import { esc } from './util.mjs';
+import { esc, norm } from './util.mjs';
 import { LIMITS } from './gate.mjs';
 
 const TITLE_SEP = ' — ';
@@ -160,6 +160,47 @@ export function withRelatedLink(html, { route, anchor }, max = 6) {
     if (i >= 0) return html.slice(0, i) + block + html.slice(i);
   }
   return null;
+}
+
+// The "Related questions" links on a live page, in either form the engine writes: render()'s
+// <section data-search-loop="related"> and withRelatedLink()'s marked block. Every re-render
+// carries them over (v1.14.0: the marked block was dropped by strengthen, refresh and reshape).
+export function relatedLinksOf(html) {
+  const blocks = [...html.matchAll(/<section data-search-loop="related">[\s\S]*?<\/section>/g), ...html.matchAll(new RegExp(`${reEsc(RELATED_START)}[\\s\\S]*?${reEsc(RELATED_END)}`, 'g'))];
+  const seen = new Set();
+  return blocks.flatMap((m) => [...m[0].matchAll(/<a href="([^"]+)">([^<]+)<\/a>/g)]).map((x) => ({ route: unesc(x[1]), anchor: unesc(x[2]) })).filter((r) => !seen.has(r.route) && seen.add(r.route));
+}
+
+const NAMED = { lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', rsquo: '\u2019', lsquo: '\u2018', ldquo: '\u201c', rdquo: '\u201d', mdash: '\u2014', ndash: '\u2013', middot: '\u00b7', hellip: '\u2026', amp: '&' };
+const unesc = (x) => x.replace(/&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));/gi, (m, d, h, n) => (d ? String.fromCodePoint(+d) : h ? String.fromCodePoint(parseInt(h, 16)) : NAMED[n.toLowerCase()] ?? m));
+const textOf = (h) => norm(unesc(h.replace(/<[^>]+>/g, ' ')));
+const TEMPLATE_HEADINGS = new Set(['Frequently asked questions', 'Related questions'].map(norm));
+
+export const EDITED_PAGE = 'the page was edited after its draft was saved, so a re-render would undo that edit; left as it is';
+
+// v1.14.0: the live page's words that its saved draft no longer matches. A re-render from the
+// draft (strengthen, refresh, reshape) would silently undo a hand fix made to the page (a
+// keepmyproof legal trip-wire fix, 14 Nov 2026, was in the page and not the draft), so any
+// difference here means the page is left as it is. Compares the draft's own prose (H1, lead,
+// section headings, paragraphs and bullets, FAQ) with the page's H1, lead and <section>s, as
+// words only: layout, dates, sources and related links are not compared.
+// Returns [] when they match, else up to 3 short descriptions of what differs.
+export function draftDrift(html, draft) {
+  const m = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+  if (!m) return ['the page has no <article> to compare with its draft'];
+  const art = m[1].replace(new RegExp(`${reEsc(RELATED_START)}[\\s\\S]*?${reEsc(RELATED_END)}`, 'g'), '');
+  const blocks = (h) => [...h.matchAll(/<(h1|h2|h3|p|li)\b[^>]*>([\s\S]*?)<\/\1>/gi)].map((x) => textOf(x[2])).filter(Boolean);
+  const sections = [...art.matchAll(/<section\b([^>]*)>([\s\S]*?)<\/section>/gi)].filter((x) => !/data-search-loop="(?:facts|related)"|search-loop-related/.test(x[1])).flatMap((x) => blocks(x[2]));
+  const top = [...art.matchAll(/<h1\b[^>]*>([\s\S]*?)<\/h1>|<p class="direct-answer">([\s\S]*?)<\/p>/gi)].map((x) => textOf(x[1] ?? x[2]));
+  const live = [...top, ...sections].filter((x) => !TEMPLATE_HEADINGS.has(x));
+  const own = [draft.h1, draft.direct_answer, ...(draft.sections || []).flatMap((s) => [s.heading, ...(s.paragraphs || []), ...(s.bullets || [])]), ...(draft.faq || []).flatMap((f) => [f.q, f.a])]
+    .map((x) => textOf(esc(x))).filter(Boolean);
+  const ownSet = new Set(own); const liveSet = new Set(live);
+  const cut = (x) => (x.length > 70 ? `${x.slice(0, 70)}...` : x);
+  return [
+    ...own.filter((x) => !liveSet.has(x)).map((x) => `the draft says "${cut(x)}", the page does not`),
+    ...live.filter((x) => !ownSet.has(x)).map((x) => `the page says "${cut(x)}", the draft does not`),
+  ].slice(0, 3);
 }
 
 export function withoutRelatedLink(html, route) {

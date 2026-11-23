@@ -803,8 +803,16 @@ test('CHECK reshape: a live page with filler is re-rendered from its draft and s
   const L = path.join(root, 'data/search-loop/pages.json');
   const [a, b] = JSON.parse(fs.readFileSync(L)).pages.filter((x) => x.status === 'live');
   assert.ok(a && b, 'two live pages to work with');
-  // Pages from the old engine: one stock sentence after every heading.
-  const old = (p) => { const f = path.join(root, p.rel); const h = fs.readFileSync(f, 'utf8').replace(/<\/h2>/g, '</h2><p>You give us the date and the place, and we bring everything.</p>'); fs.writeFileSync(f, h); return h; };
+  // Pages from the old engine: one stock sentence after every section heading, in the page and
+  // in its saved draft alike (v1.14.0: a page whose words differ from its draft is never re-rendered).
+  const STOCK = 'You give us the date and the place, and we bring everything.';
+  const old = (p) => {
+    const f = path.join(root, p.rel); const h = fs.readFileSync(f, 'utf8').replace(/(<section><h2>[^<]*<\/h2>)/g, `$1<p>${STOCK}</p>`); fs.writeFileSync(f, h);
+    const df = path.join(root, 'data/search-loop/drafts', `${p.slug}.json`); const d = JSON.parse(fs.readFileSync(df, 'utf8'));
+    for (const s of d.sections) s.paragraphs.unshift(STOCK);
+    fs.writeFileSync(df, JSON.stringify(d, null, 2));
+    return h;
+  };
   const beforeA = old(a); const beforeB = old(b);
   assert.ok(shapeGaps(beforeA, a.query).filler && shapeGaps(beforeB, b.query).filler);
   fs.rmSync(path.join(root, 'data/search-loop/drafts', `${b.slug}.json`));

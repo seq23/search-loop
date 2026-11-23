@@ -8,7 +8,9 @@ import crypto from 'node:crypto';
 import { run } from '../bin/search-loop.mjs';
 import { site, fakeFetch, goodChat, distinctChat, NOW } from './harness.mjs';
 import { readAiMisses, vetMisses, checkPageUrl, endpoint, AI_MISSES_URL } from '../src/ai-misses.mjs';
-import { decide } from '../src/check.mjs';
+import { decide, RESHAPE_VERSION } from '../src/check.mjs';
+import { render, withRelatedLink, draftDrift, relatedLinksOf } from '../src/render.mjs';
+import { fixtureConfig, fixtureDraft } from '../src/fixture.mjs';
 import { duePages } from '../src/refresh.mjs';
 import { checkReport } from '../src/report.mjs';
 import { isoWeek } from '../src/util.mjs';
@@ -272,6 +274,90 @@ test('settle: no longer listed -> kept ai_miss; a null baseline with no newer re
   assert.match(settled.strengthen.verdict.ai_miss, /^not read: /);
   const live = read(b.root, 'pages.json').pages.filter((x) => x.status === 'live');
   assert.ok(duePages(live, '2026-12-03').due.some((x) => x.slug === b.pages[0].slug), 'due for refresh 30 days after the strengthen');
+});
+
+// ---- hand-edited pages: a re-render from a stale draft would undo the edit -------------------
+
+// The keepmyproof proof run (22 Nov 2026) re-rendered a page from its draft and put back a
+// recording-law sentence a hand fix (#46) had corrected in the page only.
+const handEdit = (root, p) => {
+  const file = path.join(root, p.rel);
+  const draft = JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/drafts', `${p.slug}.json`), 'utf8'));
+  const was = fs.readFileSync(file, 'utf8');
+  const html = was.replace(`<p>${draft.sections[0].paragraphs[0]}</p>`, '<p>A hand-corrected paragraph that the saved draft does not have.</p>');
+  assert.notEqual(html, was, 'the fixture made a hand edit');
+  fs.writeFileSync(file, html);
+  return html;
+};
+
+test('a page edited by hand after its draft was saved is never re-rendered by an AI-miss strengthen; the miss is recorded with the reason', async () => {
+  const { root, pages } = await builtSite();
+  const p = pages[0];
+  const hand = handEdit(root, p);
+  const before = hashes(root);
+  const m = miss('best planner app to keep a founder week on track', p.url);
+  const calls = [];
+  const r = await withToken(() => run({ root, now: day('2026-11-03'), 'global-mode': 'normal', stage: 'check', fetchImpl: withBoss(body([m]), { pageRows: [] }), chat: aiChat({ calls }) }));
+  assert.equal(fs.readFileSync(path.join(root, p.rel), 'utf8'), hand, 'the hand edit is kept');
+  assert.deepEqual(hashes(root), before);
+  assert.equal(calls.length, 0, 'no model call for a page that will not be re-rendered');
+  assert.equal(read(root, 'pages.json').pages.find((x) => x.slug === p.slug).strengthen, undefined);
+  const skip = r.report.ai_misses.skipped.find((x) => x.id === m.id);
+  assert.match(skip?.reason || '', /edited after its draft was saved, so a re-render would undo that edit; left as it is \(the (draft|page) says "/);
+  assert.equal(read(root, 'ai-misses.json').weeks[isoWeek(NOW)][m.id].action, 'skipped', 'recorded once for the week');
+});
+
+test('a reshape never re-renders a page whose words differ from its draft', async () => {
+  const { root, pages } = await builtSite();
+  const p = pages[0];
+  // Filler in the page only (not in the draft): a re-render would also drop whatever else was edited.
+  const f = path.join(root, p.rel);
+  const html = fs.readFileSync(f, 'utf8').replace(/(<section><h2>[^<]*<\/h2>)/g, '$1<p>You give us the date and the place, and we bring everything.</p>');
+  fs.writeFileSync(f, html);
+  const book = read(root, 'pages.json');
+  for (const x of book.pages) delete x.reshaped;
+  fs.writeFileSync(path.join(root, 'data/search-loop/pages.json'), JSON.stringify(book));
+  const r = await run({ root, now: day('2026-11-03'), 'global-mode': 'normal', stage: 'check', fetchImpl: withBoss(new Response('', { status: 503 })), chat: distinctChat() });
+  assert.equal(fs.readFileSync(f, 'utf8'), html, 'left byte-identical');
+  const after = read(root, 'pages.json').pages.find((x) => x.slug === p.slug);
+  assert.equal(after.reshaped.v, RESHAPE_VERSION);
+  assert.match(after.reshaped.left.join(' '), /edited after its draft was saved/);
+  assert.ok(!r.did.check.reshaped, 'nothing reshaped');
+});
+
+test('related links in either form survive a strengthen', async () => {
+  const { root, pages } = await builtSite();
+  const p = pages[0];
+  const f = path.join(root, p.rel);
+  // The marked block BUILD adds when a newer page links back (withRelatedLink).
+  const linked = withRelatedLink(fs.readFileSync(f, 'utf8'), { route: '/questions/a-later-page/', anchor: 'A later page & more' });
+  assert.ok(linked && linked.includes('/questions/a-later-page/'));
+  fs.writeFileSync(f, linked);
+  const m = miss('best planner app to keep a founder week on track', p.url);
+  await withToken(() => run({ root, now: day('2026-11-03'), 'global-mode': 'normal', stage: 'check', fetchImpl: withBoss(body([m]), { pageRows: [] }), chat: aiChat() }));
+  const html = fs.readFileSync(f, 'utf8');
+  assert.ok(html.includes('Which notebook keeps a founder week honest?'), 'strengthened');
+  assert.deepEqual(relatedLinksOf(html).map((x) => [x.route, x.anchor]), relatedLinksOf(linked).map((x) => [x.route, x.anchor]), 'every related link kept');
+  assert.ok(relatedLinksOf(linked).some((x) => x.anchor === 'A later page & more'));
+});
+
+test('draftDrift: a page rendered from its draft matches; a changed, removed or added paragraph does not; layout, dates, sources and related links are not compared', () => {
+  const cfg = fixtureConfig(fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'sl-drift-')));
+  const d = fixtureDraft();
+  d.sections[0].paragraphs[0] = `Plan the week's "big three" & leave room <for> surprises. ${d.sections[0].paragraphs[0]}`;
+  const html = render(cfg, { slug: 'plan', draft: d, published: '2026-11-01' });
+  assert.deepEqual(draftDrift(html, d), [], 'escaped quotes, ampersands and angle brackets still match');
+  assert.deepEqual(draftDrift(html.replace(/'/g, '&#39;').replace(/&amp;/g, '&#38;').replace(/week's/g, 'week&rsquo;s'), d), [], 'the same words written with other entities still match');
+  // Dates, related links and the sources list differ: still a match.
+  const moved = withRelatedLink(render(cfg, { slug: 'plan', draft: d, related: [{ route: '/questions/x/', anchor: 'X' }], published: '2026-11-01', modified: '2026-11-20' }), { route: '/questions/y/', anchor: 'Y' });
+  assert.deepEqual(draftDrift(moved, { ...d, facts: [] }), []);
+  const para = d.sections[1].paragraphs[0];
+  const changed = html.replace(para, 'A different paragraph written by hand.');
+  assert.equal(draftDrift(changed, d).length, 2, 'the draft text is missing and the hand text is extra');
+  assert.match(draftDrift(html.replace(`<p>${para}</p>`, ''), d)[0], /^the draft says/);
+  assert.match(draftDrift(html.replace('</h1>', '</h1><section><p>Added by hand.</p></section>'), d)[0], /^the page says "added by hand"/);
+  assert.match(draftDrift(html.replace(d.faq[0].a.replace(/'/g, '&#39;'), 'A new answer.').replace(d.faq[0].a, 'A new answer.'), d).join(' '), /the draft says/);
+  assert.deepEqual(draftDrift('<html><body>no article</body></html>', d), ['the page has no <article> to compare with its draft']);
 });
 
 test('a miss naming a page that is not an engine page is skipped with that reason, and the page is untouched', async () => {

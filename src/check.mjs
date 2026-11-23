@@ -8,7 +8,7 @@ import { ledger } from './ledger.mjs';
 import { searchAnalytics, inspectUrl, dateDaysAgo } from './gsc.mjs';
 import { cloudflareDay } from './analytics.mjs';
 import { centralDate, isoWeek, daysBetween, sha256, fetchText, tokenOverlap, pastSoft, progress, norm } from './util.mjs';
-import { render, withoutRelatedLink } from './render.mjs';
+import { render, withoutRelatedLink, relatedLinksOf, draftDrift, EDITED_PAGE } from './render.mjs';
 import { gate } from './gate.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
 import { buildIndex } from './site-index.mjs';
@@ -244,8 +244,10 @@ export function reshape(cfg, L, p, { today, index = [], notes = [] }) {
     problems = [...gateOf(html, facts).filter((x) => !was.has(x)), ...Object.values(shapeGaps(html, p.query))];
   } else {
     if (!saved) return left([...Object.values(gaps), 'no saved draft to re-render']);
+    const drift = draftDrift(before, saved);
+    if (drift.length) return left([...Object.values(gaps), `${EDITED_PAGE} (${drift[0]})`]);
     next = defineLead(capRepeats(saved));
-    const relatedLinks = [...before.matchAll(/data-search-loop="related"[\s\S]*?<\/section>/g)].flatMap((m) => [...m[0].matchAll(/href="([^"]+)">([^<]+)</g)].map((x) => ({ route: x[1], anchor: x[2] })));
+    const relatedLinks = relatedLinksOf(before);
     html = render(cfg, { slug: p.slug, draft: next, related: relatedLinks, published: p.published_at, modified: today });
     const after = shapeGaps(html, p.query);
     // A lead the writer cannot rewrite never blocks the other fixes; it was already there and is no worse.
@@ -271,12 +273,18 @@ export function reshape(cfg, L, p, { today, index = [], notes = [] }) {
 // brief: the prompts the AI answers left the site out of and the sources they cited, in place
 // of the page's Search Console queries. Nothing new from the model -> the page, its draft and
 // its dates are left exactly as they were (R-ADV-12: no fake freshness).
-// Returns {ok:true} or {ok:false, why:'missing'|'model'|'nothing'|'gate', reason}.
+// Returns {ok:true} or {ok:false, why:'missing'|'edited'|'model'|'nothing'|'gate', reason}.
 async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, notes, target = null }) {
   const draftFile = path.join(L.dir, 'drafts', `${p.slug}.json`);
   const file = path.join(cfg.root, p.rel);
   if (!fs.existsSync(draftFile) || !fs.existsSync(file)) return { ok: false, why: 'missing', reason: 'no saved draft or page file to strengthen' };
   const draft = JSON.parse(fs.readFileSync(draftFile, 'utf8'));
+  const drift = draftDrift(fs.readFileSync(file, 'utf8'), draft);
+  if (drift.length) {
+    const reason = `${EDITED_PAGE} (${drift[0]})`;
+    notes.push(`strengthen of ${p.route}: ${reason}`);
+    return { ok: false, why: 'edited', reason };
+  }
   let queries; let ask;
   if (target?.kind === 'ai_miss') {
     queries = [...new Set(target.prompts)];
@@ -304,7 +312,7 @@ async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, note
   }
   next.facts = await verifyFacts(next.facts || [], fetchImpl);
   const before = fs.readFileSync(file, 'utf8');
-  const relatedLinks = [...before.matchAll(/data-search-loop="related"[\s\S]*?<\/section>/g)].flatMap((m) => [...m[0].matchAll(/href="([^"]+)">([^<]+)</g)].map((x) => ({ route: x[1], anchor: x[2] })));
+  const relatedLinks = relatedLinksOf(before);
   const html = render(cfg, { slug: p.slug, draft: next, related: relatedLinks, published: p.published_at, modified: today });
   const problems = gate({ query: p.query, html, facts: next.facts }, { cfg, corpus: index, selfRoute: p.route });
   if (problems.length) { notes.push(`strengthen of ${p.route} failed the gate, left as it was: ${problems.slice(0, 2).join('; ')}`); return { ok: false, why: 'gate', reason: `failed the gate, left as it was: ${problems.slice(0, 2).join('; ')}` }; }
