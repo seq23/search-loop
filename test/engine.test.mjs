@@ -412,7 +412,6 @@ test('a draft that only misses style or over-limit aims is published, with its n
     d.direct_answer += ' ' + d.direct_answer; // ~100 words, over the 60 aim
     d.faq[0].a += ' ' + d.faq[0].a; // over the 60-word aim
     d.sections = d.sections.slice(0, 3); // a little under 600 words, above 450
-    d.sections[0].paragraphs[0] += ' In today\'s fast-paced world, plans slip.';
     return { ok: true, answer: JSON.stringify(d) };
   };
   const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: styled });
@@ -422,7 +421,7 @@ test('a draft that only misses style or over-limit aims is published, with its n
   for (const d of book0.dropped) for (const why of d.reason) assert.match(why, /^near-duplicate/, `dropped for a non-blocking reason: ${why}`);
   const book = JSON.parse(fs.readFileSync(path.join(root, 'data/search-loop/pages.json')));
   const notes = book.pages[0].gate_notes.join('\n');
-  for (const re of [/b4 direct answer .* words/, /b5 FAQ answer is \d+ words/, /filler phrase/]) assert.match(notes, re);
+  for (const re of [/b4 direct answer .* words/, /b5 FAQ answer is \d+ words/]) assert.match(notes, re);
   assert.match(r.report.notes.join('\n'), /BUILD gate notes \(not blocking\)/);
   const html = fs.readFileSync(path.join(root, book.pages[0].rel), 'utf8');
   const title = html.match(/<title>([^<]*)<\/title>/)[1];

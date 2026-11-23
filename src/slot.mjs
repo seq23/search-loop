@@ -15,7 +15,7 @@
 // against its live pages); its problems go back to the model on the next pass.
 import { freeChat, parseJsonAnswer } from './llm.mjs';
 import { cleanDraft, verifyFacts, MAX_ATTEMPTS, pageName } from './build.mjs';
-import { LIMITS, bannedHits } from './gate.mjs';
+import { LIMITS, siteClaimHits } from './gate.mjs';
 
 export const SLOT_WORDS = { insight: [800, 1200], article: [1000, 1500], guide: [1500, 2200], 'white paper': [1800, 2500] };
 const FIRST_PERSON = /\b(I|I'm|I've|I'd|I'll|my|me|mine|myself)\b/;
@@ -82,8 +82,8 @@ export function slotProblems(d, slot, cfg = {}) {
   // A script the reader might say, in quotation marks, may use I; the writer's own voice may not.
   if (FIRST_PERSON.test(voice.replace(/["“][^"”]{0,300}["”]/g, ' '))) p.push('first person found (I, me, my); the writer never speaks as the therapist');
   if (/\[[^\]]*\]|lorem ipsum|TODO|insert /i.test(text)) p.push('placeholder text');
-  // The calendar lane obeys the same banned words as BUILD: engine-wide plus gate.banned_patterns.
-  p.push(...bannedHits(cfg, `${d.title_lead || ''}\n${d.meta_description || ''}\n${text}`));
+  // The calendar lane obeys the same site claim guard as BUILD (gate.banned_patterns).
+  p.push(...siteClaimHits(cfg, `${d.title_lead || ''}\n${d.meta_description || ''}\n${text}`));
   if (/\b988\b|not therapy|not a substitute|crisis/i.test(d.direct_answer)) p.push('the direct answer carries a disclaimer or crisis line; the first sentences are the answer only (the page shows its own note)');
   if (slot.base) {
     const angle = String(d.angle || '').trim();
