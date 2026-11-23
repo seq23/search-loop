@@ -11,7 +11,7 @@
 //   placeholders; near-duplicates; and a length FLOOR missed by more than 25%.
 // - notes: never block. Anything over a length limit, a floor missed by less
 //   than 25%, and wording/style rules (search-first title, site name once,
-//   "X is ..." answer, weak anchors, filler phrases). render.mjs fits the title
+//   "X is ..." answer, weak anchors). render.mjs fits the title
 //   and meta first, so most of these never fire.
 import { stripTags, unescAttr, wordCount, shingles, jaccard, tokenOverlap } from './util.mjs';
 
@@ -47,9 +47,6 @@ const CREDENTIAL = /(\bDr\.\s?[A-Z]|\bPh\.?D\b|\bM\.D\.|\bboard[- ]certified\b|\
 const PERSON_QUOTE = /([Aa]ccording to [A-Z][a-z]+ [A-Z][a-z]+|[A-Z][a-z]+ [A-Z][a-z]+,? (a|an|the) [a-z]+ (at|from|with) |“[^”]{10,}”\s?[—-]\s?[A-Z])/;
 // Unfinished or leaked model output: a reader sees it, so it blocks.
 const PLACEHOLDER = /(lorem ipsum|as an ai\b|\[insert|\{\{|todo:)/i;
-// Stock filler phrases: style only, a note.
-// "delve" moved to the engine-wide banned words (v1.12.2), which block; this phrase stays a note.
-const FILLER = /in today's fast-paced world/i;
 const WEAK_ANCHOR = /^(click here|here|read more|learn more|this|link|more)$/i;
 export const HEALTH = {
   outcome: /\b(cures?d?|heals?|guarantee[sd]?|guaranteed results|painless|pain[- ]free|100% (safe|effective)|will (fix|eliminate|resolve|reverse)|permanent(ly)? (fix|results)|no side effects|risk[- ]free)\b/i,
@@ -76,20 +73,15 @@ function jsonLd(html) {
 
 // page: { query, title, html, facts:[{claim, source_url, verified}] }
 // ctx: { cfg, corpus:[{route, sh}], siblings:[{route, sh}], selfRoute }
-// Words that read as machine-written on any page, engine-wide (the same list as the shared
-// ship-ready-baseline check, seq23/seq-bin ship-ready-baseline/words.json, 20 Nov 2026): a page the
-// site's ship-ready check would fail is never written. Whole words, any case.
-export const ENGINE_BANNED_WORDS = ['unlock', 'elevate', 'dive in', 'delve', 'seamless', 'empower', 'tailored', 'embark', 'ai-powered', 'sparkles?'];
-const engineBanned = new RegExp(`(?<![\\p{L}\\p{N}])(?:${ENGINE_BANNED_WORDS.join('|')})(?![\\p{L}\\p{N}])`, 'iu');
-
-/** Banned words in text: the engine-wide list, then the site's own gate.banned_patterns. One line each. */
-export function bannedHits(cfg, text) {
+// A site's own claim guard (config gate.banned_patterns, regex sources, case-insensitive): claims that
+// site may never make (keepmyproof "admissible", approvalprep naming a competitor a scam, Peace Be Still
+// "cures"). Safety, so it stays. Whether copy reads as machine-written is never decided by a word list
+// here: the model reviewer judges that in context (her ruling 23 Nov 2026, "Drop the list").
+export function siteClaimHits(cfg, text) {
   const out = [];
-  const shared = engineBanned.exec(text);
-  if (shared) out.push(`banned word: "${shared[0]}" (reads as machine-written; say it plainly)`);
   for (const src of cfg.gate?.banned_patterns || []) {
     const m = new RegExp(src, 'i').exec(text);
-    if (m) out.push(`banned word for this site: "${m[0]}"`);
+    if (m) out.push(`a claim this site never makes: "${m[0]}"`);
   }
   return out;
 }
@@ -209,12 +201,10 @@ export function gateReport(page, ctx) {
   if (CREDENTIAL.test(prose)) p.push(`invented: credential or expert claim "${(prose.match(CREDENTIAL) || [])[0]}"`);
   if (PERSON_QUOTE.test(prose)) p.push(`invented: a named person or quote "${(prose.match(PERSON_QUOTE) || [])[0].slice(0, 60)}"`);
   if (PLACEHOLDER.test(text)) p.push(`unfinished: placeholder or leaked model text "${(text.match(PLACEHOLDER) || [])[0]}"`);
-  if (FILLER.test(text)) notes.push(`filler phrase: "${(text.match(FILLER) || [])[0]}"`);
-  // A site's own banned claim words (config gate.banned_patterns, regex sources, case-insensitive),
-  // checked on the title, meta and body so a page the site's own build would refuse is never
-  // committed (9 Nov 2026: keepmyproof.com got three pages with "proves" / "best" that its build
-  // refused and its validator turned main red on).
-  p.push(...bannedHits(cfg, `${title}\n${meta}\n${text}`));
+  // The site's own claim guard on the title, meta and body, so a page the site's own build would refuse
+  // is never committed (9 Nov 2026: keepmyproof.com got three pages with "proves" / "best" that its
+  // build refused and its validator turned main red on).
+  p.push(...siteClaimHits(cfg, `${title}\n${meta}\n${text}`));
   // Health / dental gate.
   if (cfg.health_gate && cfg.health_gate !== 'none') {
     const allowed = cfg.health?.real_facts || {};

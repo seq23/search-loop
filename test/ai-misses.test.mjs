@@ -390,7 +390,7 @@ test('gate: a strengthen the gate refuses leaves the page as it was', async () =
   const { root, pages } = await builtSite();
   const before = hashes(root);
   const m = miss('best planner app to keep a founder week on track', pages[0].url);
-  const bad = { sections: [{ heading: 'Unlock a seamless week', paragraphs: [`Unlock and elevate ${words('g', 140)}.`] }], faq: [] };
+  const bad = { sections: [{ heading: 'What planners cost', paragraphs: [`Most planners charge $79 a month ${words('g', 140)}.`] }], faq: [] };
   const r = await withToken(() => run({ root, now: day('2026-11-03'), 'global-mode': 'normal', stage: 'check', fetchImpl: withBoss(body([m])), chat: aiChat({ answer: bad }) }));
   assert.deepEqual(hashes(root), before);
   assert.equal(read(root, 'pages.json').pages.find((x) => x.slug === pages[0].slug).strengthen, undefined);

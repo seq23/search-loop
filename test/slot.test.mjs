@@ -108,13 +108,11 @@ test('sibling slots: each gets its own angle on the approved base and the answer
   assert.match(seen[2], /answer only/);
 });
 
-test('the calendar lane refuses banned words: the engine-wide list and the site\'s gate.banned_patterns', () => {
-  const clean = longDraft();
-  assert.ok(!slotProblems(clean, slot, cfg).some((p) => /banned word/.test(p)), 'a clean draft has no banned word');
-  const shared = longDraft((d) => { d.sections[0].paragraphs[0] += ' A good plan will unlock your week.'; return d; });
-  assert.ok(slotProblems(shared, slot, cfg).some((p) => /banned word: "unlock"/.test(p)), 'the shared list applies with no site config');
+test('the calendar lane applies the site\'s claim guard (gate.banned_patterns) and no machine-writing word list (v1.15.0)', () => {
+  const words = longDraft((d) => { d.sections[0].paragraphs[0] += ' A good plan will unlock a seamless, tailored week.'; return d; });
+  assert.deepEqual(slotProblems(words, slot, cfg).filter((p) => /unlock|seamless|tailored/i.test(p)), [], 'no word list judges the writing');
   const site = longDraft((d) => { d.faq[0].a += ' This proves the plan works.'; return d; });
-  assert.ok(slotProblems(site, slot, { ...cfg, gate: { banned_patterns: ['\\bproves\\b'] } }).some((p) => /banned word for this site: "proves"/.test(p)));
+  assert.ok(slotProblems(site, slot, { ...cfg, gate: { banned_patterns: ['\\bproves\\b'] } }).some((p) => /a claim this site never makes: "proves"/.test(p)));
   assert.ok(!slotProblems(site, slot, cfg).some((p) => /proves/.test(p)), 'a site pattern applies only where configured');
 });
 
