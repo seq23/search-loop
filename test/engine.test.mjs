@@ -866,3 +866,47 @@ test('a draft that never gives a facts_heading is asked again, then published wi
   const html = fs.readFileSync(path.join(root, p.rel), 'utf8');
   assert.match(html, /<section data-search-loop="facts"><h2>Sources<\/h2>/);
 });
+
+test('f9 action (v1.14.2): a live page built before the site changed its one action ends in the new one after CHECK, in slow mode too, its dates unchanged; mode off and frozen sites are left alone', async () => {
+  const root = site();
+  await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: distinctChat() });
+  const L = path.join(root, 'data/search-loop/pages.json');
+  const live = JSON.parse(fs.readFileSync(L)).pages.filter((x) => x.status === 'live');
+  assert.ok(live.length, 'a live page to work with');
+  const cfgFile = path.join(root, 'search-loop.config.json');
+  const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+  const oldUrl = cfg.action.url;
+  cfg.action = { label: 'Open the free planner', url: `${cfg.base_url}/free-planner` };
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+  const before0 = fs.readFileSync(path.join(root, live[0].rel), 'utf8');
+  for (const p of live) assert.ok(fs.readFileSync(path.join(root, p.rel), 'utf8').match(/<p class="site-action">[\s\S]*?<\/p>/)[0].includes(oldUrl), 'page ends in the old action');
+  const day2 = new Date(NOW.getTime() + 7 * 86400000); // slow mode checks weekly
+  const r = await run({ root, now: day2, 'global-mode': 'slow', fetchImpl: fakeFetch(), chat: distinctChat(), stage: 'check' });
+  assert.equal(r.did.check.action_refreshed, live.length, r.report?.notes?.join(' | '));
+  for (const p of live) {
+    const h = fs.readFileSync(path.join(root, p.rel), 'utf8');
+    assert.ok(h.includes(`href="${cfg.base_url}/free-planner">Open the free planner</a>`), 'page ends in the new action');
+    assert.ok(!h.match(/<p class="site-action">[\s\S]*?<\/p>/)[0].includes(oldUrl), 'old action gone from the action line');
+  }
+  const pa = JSON.parse(fs.readFileSync(L)).pages.find((x) => x.slug === live[0].slug);
+  assert.equal(pa.modified_at, live[0].modified_at, 'the words did not change, so the date does not either (R-ADV-12)');
+  const dates = (h) => [h.match(/<p class="page-dates">[\s\S]*?<\/p>/)[0], h.match(/"dateModified":"[^"]+"/)[0]];
+  assert.deepEqual(dates(fs.readFileSync(path.join(root, live[0].rel), 'utf8')), dates(before0), 'the visible and structured dates are unchanged');
+  assert.equal(fs.readFileSync(path.join(root, live[0].rel), 'utf8').replace(/<p class="site-action">[\s\S]*?<\/p>/, ''), before0.replace(/<p class="site-action">[\s\S]*?<\/p>/, ''), 'only the action line changed');
+  assert.ok(fs.existsSync(path.join(root, 'data/search-loop/snapshots', `${pa.action_refreshed.before_hash}.html`)), 'old page snapshotted');
+  // Mode off: the engine writes nothing to the site, the action line included.
+  cfg.action = { label: 'Off action', url: `${cfg.base_url}/off` };
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+  const beforeOff = fs.readFileSync(path.join(root, live[0].rel), 'utf8');
+  const rOff = await run({ root, now: new Date(day2.getTime() + 86400000), 'global-mode': 'off', fetchImpl: fakeFetch(), chat: distinctChat(), stage: 'check' });
+  assert.equal(rOff.did.check?.action_refreshed, undefined);
+  assert.equal(fs.readFileSync(path.join(root, live[0].rel), 'utf8'), beforeOff);
+  // Frozen site: nothing published changes.
+  cfg.action = { label: 'Third action', url: `${cfg.base_url}/third` };
+  cfg.published_pages_frozen = true;
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+  const before = fs.readFileSync(path.join(root, live[0].rel), 'utf8');
+  const r2 = await run({ root, now: new Date(day2.getTime() + 7 * 86400000), 'global-mode': 'normal', fetchImpl: fakeFetch(), chat: distinctChat(), stage: 'check' });
+  assert.equal(r2.did.check.action_refreshed, undefined);
+  assert.equal(fs.readFileSync(path.join(root, live[0].rel), 'utf8'), before);
+});

@@ -107,6 +107,12 @@ export function prose(cfg, text) {
   return out + esc(s.slice(at));
 }
 
+// The site's one action, as every page ends. CHECK swaps it into live pages when the config's
+// action changes (f9: weddingchecklistpdf.com kept the old $9 link after 7 Nov 2026).
+export function actionLine(cfg) {
+  return `<p class="site-action"><a class="button" href="${esc(cfg.action.url)}">${esc(cfg.action.label)}</a></p>`;
+}
+
 export function render(cfg, { slug, draft, related = [], published, modified }) {
   const url = pageUrl(cfg, slug);
   const title = fitTitle(cfg, draft);
@@ -114,7 +120,6 @@ export function render(cfg, { slug, draft, related = [], published, modified }) 
   const t = cfg.template || {};
   const og = t.og_image || { url: `${cfg.base_url}/og.png`, width: 1200, height: 630 };
   const facts = (draft.facts || []).filter((f) => f.verified);
-  const actionHref = cfg.action.url;
   const graph = [
     { '@type': 'Article', '@id': `${url}#article`, headline: draft.h1, description: draft.meta_description, url, mainEntityOfPage: url, datePublished: published, dateModified: modified || published, inLanguage: 'en',
       author: cfg.author?.name ? { '@type': 'Person', name: cfg.author.name, ...(cfg.author.url ? { url: cfg.author.url } : {}) } : publisherNode(cfg),
@@ -143,7 +148,7 @@ export function render(cfg, { slug, draft, related = [], published, modified }) 
     // FAQ under a plain label, so no fixed heading sits in the middle of the page.
     ...(facts.length && !draft.facts_heading ? [factsBlock('Sources', facts)] : []),
     related.length ? `<section data-search-loop="related"><h2>Related questions</h2><ul>${related.map((r) => `<li><a href="${esc(r.route)}">${esc(r.anchor)}</a></li>`).join('')}</ul></section>` : '',
-    `<p class="site-action"><a class="button" href="${esc(actionHref)}">${esc(cfg.action.label)}</a></p>`,
+    actionLine(cfg),
   ].join('\n');
   return `<!DOCTYPE html>
 <html lang="en"><head>
