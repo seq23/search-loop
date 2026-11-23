@@ -13,6 +13,7 @@ import { render, withRelatedLink, draftDrift, relatedLinksOf } from '../src/rend
 import { fixtureConfig, fixtureDraft } from '../src/fixture.mjs';
 import { duePages } from '../src/refresh.mjs';
 import { checkReport } from '../src/report.mjs';
+import { gate } from '../src/gate.mjs';
 import { isoWeek } from '../src/util.mjs';
 
 const CFG = { base_url: 'https://example.com', output: { url_prefix: '/questions/' } };
@@ -112,6 +113,22 @@ test('outage in a real run: the run goes on as before and the report says not re
   const r2 = await withToken(() => run({ root, now: NOW, 'global-mode': 'normal', stage: 'check', fetchImpl: withBoss(body([], { status: 'not_read' })), chat: goodChat() }));
   assert.match(r2.report.ai_misses.read, /^not read: .*not_read/);
   assert.equal(r2.report.ai_misses.could_not_tell, 2);
+});
+
+test('outage at 23:30 CT counts on its Central day (could_not_tell 1); a read 7 Central days old has dropped out', async () => {
+  const down = () => withBoss(new Response('down', { status: 503 }));
+  const at = (root, iso, fetchImpl = down()) => withToken(() => run({ root, now: new Date(iso), 'global-mode': 'normal', stage: 'check', fetchImpl, chat: goodChat() }));
+  // 2026-11-22 23:30 CST is 2026-11-23 05:30 UTC: "tomorrow" by its UTC date.
+  const tonight = await at(site(), '2026-11-23T05:30:00Z');
+  assert.match(tonight.report.ai_misses.read, /^not read: Boss OS answered HTTP 503/);
+  assert.equal(tonight.report.ai_misses.could_not_tell, 1, 'an outage at 23:30 CT is counted that day');
+  assert.deepEqual(checkReport(tonight.report), []);
+  // 2026-11-15 23:30 CST (2026-11-16 05:30 UTC) is 7 Central days before 2026-11-22 23:00 CST: out of the week.
+  const root = site();
+  await at(root, '2026-11-16T05:30:00Z');
+  const week = await at(root, '2026-11-23T05:00:00Z', withBoss(body([])));
+  assert.equal(week.report.ai_misses.read, 'ok');
+  assert.equal(week.report.ai_misses.could_not_tell, 0, 'the outage 7 Central days ago is out of the week');
 });
 
 test('a test or proof run may point the reader at this machine only', () => {
@@ -339,6 +356,30 @@ test('related links in either form survive a strengthen', async () => {
   assert.ok(html.includes('Which notebook keeps a founder week honest?'), 'strengthened');
   assert.deepEqual(relatedLinksOf(html).map((x) => [x.route, x.anchor]), relatedLinksOf(linked).map((x) => [x.route, x.anchor]), 'every related link kept');
   assert.ok(relatedLinksOf(linked).some((x) => x.anchor === 'A later page & more'));
+});
+
+test('render links a same-site address written in the prose; other addresses stay text; links already on the page are untouched', () => {
+  const cfg = fixtureConfig(fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'sl-prose-')));
+  const d = fixtureDraft();
+  const plain = render(cfg, { slug: 'plan', draft: d, related: [{ route: '/questions/x/', anchor: 'X' }], published: '2026-11-01' });
+  d.sections[0].paragraphs[0] = `Read the disclaimer at https://example.com/disclaimer. Lists live at https://example.com/a?x=1&y=2, never at https://evil.example.net/x, https://example.com.evil.net/x, https://example.com:pw@example.com/x or http://example.com/x. ${d.sections[0].paragraphs[0]}`;
+  d.faq[0].a = `${d.faq[0].a} See (https://example.com/vault).`;
+  d.sections[0].bullets = [...(d.sections[0].bullets || []), 'Keep a copy at https://example.com/vault'];
+  const html = render(cfg, { slug: 'plan', draft: d, related: [{ route: '/questions/x/', anchor: 'X' }], published: '2026-11-01' });
+  assert.ok(html.includes('Read the disclaimer at <a href="https://example.com/disclaimer">https://example.com/disclaimer</a>. Lists'), 'linked; the full stop stays outside the link');
+  assert.ok(html.includes('<a href="https://example.com/a?x=1&amp;y=2">https://example.com/a?x=1&amp;y=2</a>,'));
+  assert.ok(html.includes('See (<a href="https://example.com/vault">https://example.com/vault</a>).'), 'an FAQ answer too; the bracket stays outside');
+  assert.ok(html.includes('<li>Keep a copy at <a href="https://example.com/vault">https://example.com/vault</a></li>'), 'a bullet too');
+  for (const t of ['never at https://evil.example.net/x, https://example.com.evil.net/x, https://example.com:pw@example.com/x or http://example.com/x.']) assert.ok(html.includes(t), 'another host, a look-alike host, credentials and a scheme the site does not allow stay text');
+  // The links render already writes (breadcrumb, action, sources, related) are the same, never wrapped again.
+  const links = (h) => [...h.matchAll(/<a\s[^>]*>[\s\S]*?<\/a>/g)].map((m) => m[0]);
+  const added = links(html).filter((l) => !links(plain).includes(l));
+  assert.deepEqual([...new Set(added)].sort(), ['<a href="https://example.com/a?x=1&amp;y=2">https://example.com/a?x=1&amp;y=2</a>', '<a href="https://example.com/disclaimer">https://example.com/disclaimer</a>', '<a href="https://example.com/vault">https://example.com/vault</a>']);
+  assert.ok(links(plain).every((l) => links(html).includes(l)), 'every link the page had is still there, unchanged');
+  assert.doesNotMatch(html, /<a [^>]*>[^<]*<a /, 'no link inside a link');
+  assert.ok(html.includes('"text":"' + d.faq[0].a.replace(/"/g, '\\"') + '"'), 'the FAQ structured data keeps the plain words');
+  assert.deepEqual(draftDrift(html, d), [], 'the page still reads the same words as its draft');
+  assert.deepEqual(gate({ query: 'plan', html, facts: d.facts }, { cfg, corpus: [], selfRoute: '/questions/plan/' }).filter((x) => /^links:|^action:/.test(x)), [], 'the gate allows the links and the page still ends in its one action');
 });
 
 test('draftDrift: a page rendered from its draft matches; a changed, removed or added paragraph does not; layout, dates, sources and related links are not compared', () => {
