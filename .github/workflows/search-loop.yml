@@ -147,6 +147,10 @@ jobs:
         run: node .search-loop-engine/bin/search-loop.mjs validate-config --config "${{ inputs.config }}"
       - name: Run the search loop
         id: engine
+        env:
+          # v1.14.0: reads this site's AI answer misses from Boss OS (read only). This step
+          # only, never the site's own setup or build commands. Not passed -> "could not tell".
+          BOSS_OPEN_LOOPS_TOKEN: ${{ secrets.BOSS_OPEN_LOOPS_TOKEN }}
         run: |
           set +e
           node .search-loop-engine/bin/search-loop.mjs run --config "${{ inputs.config }}" --stage "${{ inputs.stage }}" --github-output 2>&1 | tee .search-loop-run.log

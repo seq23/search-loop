@@ -42,6 +42,9 @@ export function check(s) {
   const req = new Set(sch.required || []);
   for (const f of REPORT_FIELDS) if (!req.has(f)) p.push(`schema does not require ${f}`);
   if (JSON.stringify(sch.properties?.state?.enum) !== JSON.stringify(STATES)) p.push('schema state enum differs from the engine');
+  // v1.14.0: ai_misses is additive, so a Boss OS reader from before it still parses the line.
+  if (!sch.properties?.ai_misses) p.push('schema does not describe ai_misses');
+  if (req.has('ai_misses') || req.has('lanes')) p.push('schema must not require the optional blocks ai_misses / lanes (old readers would break)');
   // 2. Reusable workflow: callable, uploads search-loop-week always, publishes only on the default branch.
   const w = s.reusable; examined++;
   if (!/^\s{2}workflow_call:/m.test(w)) p.push('search-loop.yml is not a reusable workflow (workflow_call)');
@@ -52,6 +55,9 @@ export function check(s) {
   if (!/bin\/search-loop\.mjs run/.test(w)) p.push('search-loop.yml never runs the engine');
   if (!/repository:\s*seq23\/search-loop/.test(w)) p.push('search-loop.yml must check out the engine from seq23/search-loop');
   if (/confirm_paid|ANTHROPIC_API_KEY|OPENAI_API_KEY/.test(w)) p.push('search-loop.yml references a paid lane or key');
+  // v1.14.0: the engine step reads AI answer misses with the Open Loops token (that step only).
+  const runStep = w.slice(w.indexOf('- name: Run the search loop'), w.indexOf('- name: Site build for new pages'));
+  if (!/BOSS_OPEN_LOOPS_TOKEN:\s*\$\{\{\s*secrets\.BOSS_OPEN_LOOPS_TOKEN\s*\}\}/.test(runStep)) p.push('the "Run the search loop" step does not pass BOSS_OPEN_LOOPS_TOKEN (AI answer misses would never be read)');
   // 3. The global switch.
   examined++;
   if (!/vars\.SEARCH_LOOP_MODE/.test(s.modeSync)) p.push('mode-sync.yml does not read vars.SEARCH_LOOP_MODE');
@@ -122,6 +128,8 @@ function selfTest() {
     ['mode-sync bare push', mut('modeSync', /node bin\/commit-push\.mjs[^\n]*/, 'git push')],
     ['no validate stage', mut('reusable', "if: inputs.stage == 'validate'", 'if: false')],
     ['saw nothing', () => check({ ...real, files: [] })],
+    ['ai_misses made required', mut('schema', '"run_url"\n  ]', '"run_url",\n    "ai_misses"\n  ]')],
+    ['run step loses the AI misses token', mut('reusable', /(Run the search loop[\s\S]*?)BOSS_OPEN_LOOPS_TOKEN: \$\{\{ secrets\.BOSS_OPEN_LOOPS_TOKEN \}\}/, '$1X: y')],
   ];
   const missed = BROKEN.filter(([, f]) => f().problems.length === 0 || f().problems[0] === 'MUTATION DID NOT APPLY').map(([n]) => n);
   if (missed.length) { console.error(`NAMED STOP [SELF_TEST_BLIND] not caught: ${missed.join(', ')}`); process.exit(1); }

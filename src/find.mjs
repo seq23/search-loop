@@ -162,16 +162,16 @@ export function claimedElsewhere(q, cfg, claims) {
   return claims.find((c) => (keyOf(c.query) === k || tokenOverlap(c.query, q) >= 0.9) && (c.published || String(c.site) < String(cfg.site)));
 }
 
-export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, chat = freeChat } = {}) {
+export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, chat = freeChat, aiMisses = [] } = {}) {
   const L = ledger(cfg);
   const receipt = { schema: 'search-loop-discovery-v1', site: cfg.site, week: isoWeek(now), generated_at: now.toISOString(), paid_calls: 0, cost_usd: 0, hosts: {}, sources: {} };
   const cands = new Map();
   const add = (q, sig) => {
     const n = norm(q);
-    if (!n || n.length < 8 || NAV.test(n)) return;
+    if (!n || n.length < 8 || NAV.test(n)) return null;
     const words = n.split(' ').length;
-    if (words < 2 || words > 14 || contentWords(n).length < 2) return;
-    if ((cfg.find?.exclude_words || []).some((w) => n.includes(norm(w)))) return;
+    if (words < 2 || words > 14 || contentWords(n).length < 2) return null;
+    if ((cfg.find?.exclude_words || []).some((w) => n.includes(norm(w)))) return null;
     const k = intentKey(n);
     const cur = cands.get(k) || { query: n, variants: [], signals: { words, question: isQuestion(n) } };
     if (cur.query !== n && !cur.variants.includes(n)) cur.variants.push(n);
@@ -180,7 +180,19 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
     Object.assign(cur.signals, sig);
     cur.priority ||= priorityTopic(n, cfg) || undefined;
     cands.set(k, cur);
+    return cur;
   };
+
+  // 0. AI answer misses with no page that fits (v1.14.0, Boss OS): the buyer questions
+  //    ChatGPT, Gemini or AI Overviews answered without this site. They pass every gate
+  //    below like any other search, and lead the list when they survive.
+  const aiOutcome = new Map();
+  for (const m of aiMisses) {
+    const c = add(m.prompt, {});
+    if (!c) { aiOutcome.set(m.id, { action: 'skipped', reason: 'not a page-sized search (too short or long, a navigation search, or a find.exclude_words word)' }); continue; }
+    (c.ai_miss_ids ||= []).includes(m.id) || c.ai_miss_ids.push(m.id);
+    c.signals.ai_miss = true;
+  }
 
   // 1. Search Console rows at positions ~8-30 (measured).
   const gscSite = cfg.gsc?.site_url || process.env[cfg.gsc?.site_url_env || 'GSC_SITE_URL'] || null;
@@ -255,10 +267,13 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
   const targets = [];
   const strengthen = [];
   let droppedShared = 0;
+  const aiSkip = (c, reason) => { for (const id of c.ai_miss_ids || []) aiOutcome.set(id, { action: 'skipped', reason }); };
   for (const c of cands.values()) {
-    if (engine.some((p) => intentKey(p.query) === intentKey(c.query))) continue;
+    const dup = engine.find((p) => intentKey(p.query) === intentKey(c.query));
+    if (dup) { aiSkip(c, `an engine page already has this intent: ${dup.route}`); continue; }
     const covering = index.find((p) => coverage(p, c.query, siteWords) >= 0.85);
-    if (claimedElsewhere(c.query, cfg, claims)) { droppedShared++; continue; }
+    if (claimedElsewhere(c.query, cfg, claims)) { aiSkip(c, 'a sibling site with the same audience already holds this search'); droppedShared++; continue; }
+    if (covering) aiSkip(c, `the site already answers it at ${covering.route} (a strengthen candidate)`);
     c.scores = { striking: scoreCandidate(c.signals) };
     const covered = Math.max(0, ...index.map((p) => coverage(p, c.query, siteWords)));
     Object.assign(c.signals, gscCompetition(c, { wins, measured, covered }));
@@ -270,7 +285,7 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
   // the screen sees the best of both lanes
   const byOne = [...targets].sort((a, b) => b.scores.can_be_one - a.scores.can_be_one);
   targets.sort((a, b) => b.score - a.score);
-  const pool = [...new Set([...targets.filter((t) => t.priority).slice(0, 75), ...byOne.slice(0, 75).filter((t) => t.scores.can_be_one > 0), ...targets])].slice(0, 150);
+  const pool = [...new Set([...targets.filter((t) => t.ai_miss_ids).slice(0, 50), ...targets.filter((t) => t.priority).slice(0, 75), ...byOne.slice(0, 75).filter((t) => t.scores.can_be_one > 0), ...targets])].slice(0, 150);
   const screen = pool.length ? await relevanceScreen(cfg, pool, { chat, fetchImpl }) : { keep: new Set() };
   let screened = targets;
   if (screen.notRead) receipt.sources.relevance_screen = `not read: ${screen.notRead} (lexical floor only)`;
@@ -293,11 +308,13 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
       t.reasons = [t.signals.gsc_position ? `already ranks ${t.signals.gsc_position} in Search Console (${t.signals.gsc_impressions} impressions)` : 'autocomplete demand (google/bing)', ...(one.score >= minOne ? [`can-be-#1 score ${one.score} too (taken by the striking lane's turn)`] : one.reasons.length ? [`can-be-#1 evidence too thin (${one.score} < ${minOne})`] : [])];
     }
     if (t.priority) t.reasons = [`priority topic "${t.priority}" (find.priority_topics): built before other searches`, ...t.reasons];
+    if (t.ai_miss_ids) t.reasons = ['AI answer miss: ChatGPT, Gemini or AI Overviews answer this without the site and no page fits; built first', ...t.reasons];
     if (!t.signals.top10) t.signals.top10 = receipt.sources.top10?.startsWith('not read') ? receipt.sources.top10 : 'not read: outside this run\'s top-10 budget';
   }
   strengthen.sort((a, b) => b.score - a.score);
   // Priority searches lead the list (and survive the max_targets cut); BUILD takes them first.
-  screened = [...screened.filter((t) => t.priority), ...screened.filter((t) => !t.priority)];
+  // AI answer misses first, then priority searches.
+  screened = [...screened.filter((t) => t.ai_miss_ids), ...screened.filter((t) => !t.ai_miss_ids && t.priority), ...screened.filter((t) => !t.ai_miss_ids && !t.priority)];
   const nPri = receipt.seeds.priority_topics;
   receipt.seeds.priority_targets = screened.filter((t) => t.priority).length;
   if (nPri && !receipt.seeds.priority_targets) receipt.notes.push(`NAMED NOTE [FIND_PRIORITY_EMPTY] the site's ${nPri} priority topic(s) produced no new search this week (${[...cands.values()].filter((c) => c.priority).length} candidate(s) before the site-coverage check and the relevance screen); the other topics still build`);
@@ -305,7 +322,15 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
   receipt.lanes = { ratio: laneRatio(cfg), can_be_one: screened.filter((t) => t.lane === 'can_be_one').length, striking: screened.filter((t) => t.lane === 'striking').length, weights };
   receipt.counts = { candidates: cands.size, targets: screened.length, strengthen_candidates: strengthen.length, dropped_shared_audience: droppedShared };
   const out = { schema: 'search-loop-targets-v1', site: cfg.site, week: receipt.week, generated_at: receipt.generated_at, sources: receipt.sources, targets: screened.slice(0, cfg.find.max_targets), strengthen: strengthen.slice(0, 50) };
+  const idsOf = (list) => new Set(list.flatMap((t) => t.ai_miss_ids || []));
+  const kept = idsOf(out.targets); const passed = idsOf(screened);
+  for (const t of targets) for (const id of t.ai_miss_ids || []) {
+    if (aiOutcome.has(id)) continue;
+    aiOutcome.set(id, kept.has(id) ? { action: 'candidate', prompt: t.query } : passed.has(id) ? { action: 'skipped', reason: `past this week's ${cfg.find.max_targets}-search limit` } : { action: 'skipped', reason: 'the relevance screen kept it off this site\'s list' });
+  }
+  for (const m of aiMisses) if (!aiOutcome.has(m.id)) aiOutcome.set(m.id, { action: 'skipped', reason: 'dropped by FIND' });
+  if (aiMisses.length) receipt.ai_misses = Object.fromEntries(aiOutcome);
   L.write('targets', out);
   L.write('receipt', receipt);
-  return { targets: out.targets.length, strengthen: out.strengthen.length, priority: receipt.seeds.priority_targets, sources: receipt.sources, notes: (receipt.notes || []).filter((n) => n.startsWith('NAMED ')), receipt };
+  return { ai_misses: aiOutcome, targets: out.targets.length, strengthen: out.strengthen.length, priority: receipt.seeds.priority_targets, sources: receipt.sources, notes: (receipt.notes || []).filter((n) => n.startsWith('NAMED ')), receipt };
 }
