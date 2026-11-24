@@ -84,6 +84,29 @@ function factsBlock(heading, facts) {
 }
 
 // draft: { h1, title_lead, meta_description, direct_answer, sections[{heading, paragraphs[], bullets?[]}], faq[{q,a}], facts_heading, facts[{claim, source_url, source_name, verified}] }
+// v1.14.1: a web address on the site's own host written in the prose is a link. keepmyproof's voice
+// says "Link the vault hub https://keepmyproof.com/vault and the disclaimer ..."; the model writes the
+// address as text, and render escaped it, so the page showed it bare (what-documentation-is-needed-
+// for-a-divorce, 22 Nov 2026). The address stays the link's text, so draftDrift reads the same words.
+// Only addresses the gate allows (allowed_link_targets) on the site's host; any other stays text.
+// Prose fields are plain text, so nothing here is already inside a link.
+const URL_IN_TEXT = /https?:\/\/[^\s<>"'()\[\]]+/g;
+const bare = (h) => h.toLowerCase().replace(/^www\./, '');
+export function prose(cfg, text) {
+  const s = String(text ?? '');
+  const site = new URL(cfg.base_url);
+  let out = ''; let at = 0;
+  for (const m of s.matchAll(URL_IN_TEXT)) {
+    const addr = m[0].replace(/[.,;:!?]+$/, '');
+    let u; try { u = new URL(addr); } catch { continue; }
+    if (u.username || u.password || bare(u.hostname) !== bare(site.hostname) || u.port !== site.port) continue;
+    if (!(cfg.allowed_link_targets || []).some((t) => addr.startsWith(t))) continue;
+    out += `${esc(s.slice(at, m.index))}<a href="${esc(addr)}">${esc(addr)}</a>`;
+    at = m.index + addr.length;
+  }
+  return out + esc(s.slice(at));
+}
+
 export function render(cfg, { slug, draft, related = [], published, modified }) {
   const url = pageUrl(cfg, slug);
   const title = fitTitle(cfg, draft);
@@ -111,11 +134,11 @@ export function render(cfg, { slug, draft, related = [], published, modified }) 
   const body = [
     `<nav aria-label="Breadcrumb" class="breadcrumb"><a href="/">${esc(cfg.site_name)}</a> › <span>${esc(draft.h1)}</span></nav>`,
     `<h1>${esc(draft.h1)}</h1>`,
-    `<p class="direct-answer">${esc(draft.direct_answer)}</p>`,
+    `<p class="direct-answer">${prose(cfg, draft.direct_answer)}</p>`,
     `<p class="page-dates">Published <time datetime="${published}">${humanDate(published)}</time>${modified && modified !== published ? ` · Updated <time datetime="${modified}">${humanDate(modified)}</time>` : ''} · ${cfg.author?.name ? `By ${cfg.author.url ? `<a href="${esc(cfg.author.url)}">${esc(cfg.author.name)}</a>` : esc(cfg.author.name)}` : esc(cfg.publisher?.name || cfg.site_name)}</p>`,
-    ...draft.sections.map((s) => `<section><h2>${esc(s.heading)}</h2>${s.paragraphs.map((x) => `<p>${esc(x)}</p>`).join('')}${(s.bullets || []).length ? `<${list}>${s.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</${list}>` : ''}</section>`),
+    ...draft.sections.map((s) => `<section><h2>${esc(s.heading)}</h2>${s.paragraphs.map((x) => `<p>${prose(cfg, x)}</p>`).join('')}${(s.bullets || []).length ? `<${list}>${s.bullets.map((b) => `<li>${prose(cfg, b)}</li>`).join('')}</${list}>` : ''}</section>`),
     ...(facts.length && draft.facts_heading ? [factsBlock(draft.facts_heading, facts)] : []),
-    `<section class="faq"><h2>Frequently asked questions</h2>${draft.faq.map((f) => `<h3>${esc(f.q)}</h3><p>${esc(f.a)}</p>`).join('')}</section>`,
+    `<section class="faq"><h2>Frequently asked questions</h2>${draft.faq.map((f) => `<h3>${esc(f.q)}</h3><p>${prose(cfg, f.a)}</p>`).join('')}</section>`,
     // v1.13.0: a draft with no model-written heading (older drafts) keeps its sources, below the
     // FAQ under a plain label, so no fixed heading sits in the middle of the page.
     ...(facts.length && !draft.facts_heading ? [factsBlock('Sources', facts)] : []),

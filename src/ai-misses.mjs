@@ -139,6 +139,8 @@ export function saveAiLedger(L, book) {
   L.write('ai_misses', { schema: AI_MISSES_SCHEMA, weeks: Object.fromEntries(weeks.map((w) => [w, book.weeks[w]])), reads: book.reads.slice(-KEEP_READS) });
 }
 
+const readDay = (at) => { const d = new Date(at); return Number.isNaN(d.getTime()) ? null : centralDate(d); };
+
 // The week report's ai_misses block: the last 7 days from the ledger plus this run's own skips.
 export function aiMissesBlock(L, { now = new Date(), run = null } = {}) {
   const today = centralDate(now);
@@ -150,7 +152,10 @@ export function aiMissesBlock(L, { now = new Date(), run = null } = {}) {
     week: last?.week || null,
     misses: last?.status === 'read' ? last.misses : 0,
     strengthened: [], new_candidates: [], skipped: [], rejected: [],
-    could_not_tell: book.reads.filter((r) => r.status !== 'read' && within7(r.at)).length,
+    // A read's `at` is a UTC instant; the week report counts days in Central. Counted by its UTC
+    // date, an evening read (after 18:00 CST / 19:00 CDT) is "tomorrow" and was left out, so an
+    // outage at 23:30 CT reported could_not_tell 0 (keepmyproof proof run, 22 Nov 2026).
+    could_not_tell: book.reads.filter((r) => r.status !== 'read' && within7(readDay(r.at))).length,
   };
   for (const w of Object.keys(book.weeks).sort()) {
     for (const [id, a] of Object.entries(book.weeks[w])) {
