@@ -5,6 +5,8 @@
 //   - Google impressions for the last 28 days beat the 28 before -> +grow_share (10%)
 //   - they dropped -> back by grow_share (never under min_pages)
 //   - equal, or Search Console not readable -> held (no growth), with a note
+//   - impressions in the last 28 days and no rows before them (a site new to
+//     Google) -> the 28 before count as 0, so the cap grows
 // Starting value: cap.max_live_pages when the site sets it, otherwise the
 // site's distinct live engine pages (near-twins count once), at least
 // start_pages (20). cap.max_per_day (10) is a run guard for the shared free
@@ -48,9 +50,15 @@ export async function impressionWindows(cfg, { now = new Date(), fetchImpl = fet
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < prevFrom || d > end) continue;
     if (d >= lastFrom) { last += row.impressions || 0; lastDays++; } else { prev += row.impressions || 0; prevDays++; }
   }
+  const prevEnd = dateDaysAgo(GSC_LAG_DAYS + WINDOW_DAYS, now);
   if (!lastDays && !prevDays) return { notRead: 'Search Console returned no daily impression rows for the last 56 days' };
-  if (!prevDays) return { notRead: `Search Console has no rows for ${prevFrom}..${dateDaysAgo(GSC_LAG_DAYS + WINDOW_DAYS, now)}, so there is nothing to compare the last 28 days with` };
-  return { last, prev, lastDays, prevDays, window: { last: [lastFrom, end], prev: [prevFrom, dateDaysAgo(GSC_LAG_DAYS + WINDOW_DAYS, now)] } };
+  // Search Console leaves out the days a site had no impressions, so a read that
+  // answered with impressions for the last 28 days and no rows before them is a
+  // site new to Google: the 28 before were 0, and real growth from 0 counts.
+  // With no impressions in the last 28 days either there is nothing seen to judge.
+  if (!prevDays && !last) return { notRead: `Search Console has no rows for ${prevFrom}..${prevEnd}, so there is nothing to compare the last 28 days with` };
+  const out = { last, prev, lastDays, prevDays, window: { last: [lastFrom, end], prev: [prevFrom, prevEnd] } };
+  return prevDays ? out : { ...out, newToGoogle: `Search Console has no rows for ${prevFrom}..${prevEnd}: the site had no impressions before ${lastFrom}` };
 }
 
 // Pure: one weekly decision. w = impressionWindows() result.
@@ -61,7 +69,7 @@ export function nextCap(cfg, cap, w, now = new Date()) {
   const from = cap.max_live_pages;
   let to = from; let reason; let held = false;
   if (!w || w.notRead) { held = true; reason = `held at ${from}: no Search Console numbers to judge results (${w?.notRead || 'not read'}); the cap never grows without data`; }
-  else if (w.last > w.prev) { to = Math.max(from + 1, Math.ceil(from * (1 + c.grow_share) - 1e-9)); reason = `up from ${from} to ${to}: Google impressions ${w.last} in the last 28 days beat ${w.prev} in the 28 before`; }
+  else if (w.last > w.prev) { to = Math.max(from + 1, Math.ceil(from * (1 + c.grow_share) - 1e-9)); reason = `up from ${from} to ${to}: Google impressions ${w.last} in the last 28 days beat ${w.prev} in the 28 before${w.newToGoogle ? ` (${w.newToGoogle})` : ''}`; }
   else if (w.last < w.prev) { to = Math.max(c.min_pages, Math.floor(from * (1 - c.grow_share) + 1e-9)); reason = to === from ? `held at the floor ${from}: impressions fell (${w.last} vs ${w.prev})` : `down from ${from} to ${to}: Google impressions fell to ${w.last} in the last 28 days from ${w.prev} in the 28 before`; }
   else reason = `held at ${from}: Google impressions flat (${w.last} vs ${w.prev})`;
   const out = { ...cap, max_live_pages: to, reason, last_eval_week: week, ...(w && !w.notRead ? { impressions: { last_28: w.last, prev_28: w.prev } } : {}), history: [...(cap.history || []), { at: now.toISOString(), week, from, to, reason }].slice(-104) };
