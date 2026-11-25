@@ -186,7 +186,9 @@ test('the cap rises only when Google impressions grow, falls when they drop, hol
   const nd = nextCap(cfg, { max_live_pages: 50, history: [] }, { notRead: 'no rows' }, NOW);
   assert.equal(nd.cap.max_live_pages, 50); assert.equal(nd.held, true); assert.match(nd.reason, /no Search Console numbers/);
   // End to end: a fresh site starts at 20 (start_pages); growth -> 22, drop -> 18, no rows -> 20 held with a named note.
-  const cases = [[window(10, 20), 22, /^cap: up from 20 to 22/m], [window(20, 10), 18, /^cap: down from 20 to 18/m], [[], 20, /NAMED NOTE \[CAP_HELD_NO_DATA\]/], [window(0, 0).slice(28), 20, /CAP_HELD_NO_DATA.*nothing to compare/]];
+  // A site new to Google (impressions in the last 28 days, no rows before them: Search Console omits
+  // zero days) grows from 0; with no impressions in either window it holds (keepmyproof.com, 24 Nov 2026).
+  const cases = [[window(10, 20), 22, /^cap: up from 20 to 22/m], [window(20, 10), 18, /^cap: down from 20 to 18/m], [[], 20, /NAMED NOTE \[CAP_HELD_NO_DATA\]/], [window(0, 0).slice(28), 20, /CAP_HELD_NO_DATA.*nothing to compare/], [window(0, 5).slice(28), 22, /^cap: up from 20 to 22: Google impressions 140 in the last 28 days beat 0 in the 28 before \(Search Console has no rows/m]];
   for (const [dateRows, want, note] of cases) {
     const root = site();
     const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch({ dateRows }), chat: goodChat() });
