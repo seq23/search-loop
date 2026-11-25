@@ -43,7 +43,21 @@ on:
         description: The Boss OS brain slug this site's Open Loops rows belong to
         type: string
         default: spry
+      gsc_site_secret:
+        description: Environment secret holding the Search Console property
+        type: string
+        default: GSC_SITE_URL
+      cloudflare_read_secret:
+        description: Environment secret holding the Cloudflare analytics token
+        type: string
+        default: SEARCH_LOOP_CF_USAGE_TOKEN
     secrets:
+      SEARCH_LOOP_CF_ACCOUNT_ID:
+        required: false
+      SEARCH_LOOP_CF_WORKERS_AI_TOKEN:
+        required: false
+      SEARCH_LOOP_GEMINI_API_KEY:
+        required: false
       OPENROUTER_API_KEY:
         required: false
       GSC_SERVICE_ACCOUNT_JSON:
@@ -98,7 +112,8 @@ jobs:
       - name: Validate the site config and model routing
         run: node .search-loop-engine/bin/search-loop.mjs validate-config --config "${{ inputs.config }}"
   loop:
-    if: inputs.stage != 'validate'
+    if: inputs.stage != 'validate' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request_target'
+    environment: reviewed-main
     runs-on: ubuntu-latest
     # ~4x a normal run (20 min) after the scheduled stagger (0-39 min). The engine's own
     # soft budget (35 min) and watchdog (55 min, NAMED STOP [RUN_HUNG]) end first.
@@ -109,17 +124,16 @@ jobs:
     env:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       GSC_SERVICE_ACCOUNT_JSON: ${{ secrets.GSC_SERVICE_ACCOUNT_JSON }}
-      GSC_SITE_URL: ${{ secrets.GSC_SITE_URL }}
+      GSC_SITE_URL: ${{ secrets[inputs.gsc_site_secret] || secrets.GSC_SITE_URL }}
       BING_WEBMASTER_API_KEY: ${{ secrets.BING_WEBMASTER_API_KEY }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets[inputs.cloudflare_read_secret] || secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.SEARCH_LOOP_CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.SEARCH_LOOP_CF_WORKERS_AI_TOKEN || secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+      GEMINI_API_KEY: ${{ secrets.SEARCH_LOOP_GEMINI_API_KEY || secrets.GEMINI_API_KEY }}
       INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}
       BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
       NODE_OPTIONS: ${{ inputs.node_options }}
-      # Only the default branch publishes. A run on any other branch builds,
-      # gates and reports, and uploads the pages as an artifact: a proof run.
+      # Validate-only pull requests use the separate credential-free job above.
       PUBLISH: ${{ github.ref_name == github.event.repository.default_branch && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
@@ -138,7 +152,7 @@ jobs:
           # A missing secret is a NAMED NOTE, never a red run: the stages that need it
           # write 'not read' (also in the weekly report) and the next run retries.
           for s in OPENROUTER_API_KEY GSC_SERVICE_ACCOUNT_JSON GSC_SITE_URL; do
-            if [ -z "${!s}" ]; then echo "NAMED NOTE [SECRET_MISSING_$s] repository secret $s is not passed to search-loop; the stages that need it write 'not read' and the rest run. Add it in the site repo's Settings -> Secrets and pass it in the caller's secrets: block." | tee -a "$GITHUB_STEP_SUMMARY"; fi
+            if [ -z "${!s}" ]; then echo "NAMED NOTE [SECRET_MISSING_$s] the reviewed-main environment has no value for $s; the stages that need it write 'not read' and the rest run." | tee -a "$GITHUB_STEP_SUMMARY"; fi
           done
       - name: Site setup
         if: inputs.setup_command != ''
