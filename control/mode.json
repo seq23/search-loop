@@ -1,7 +1,7 @@
 {
   "schema": "search-loop-mode-v1",
   "mode": "normal",
-  "synced_at": "2026-11-19T20:28:29Z",
+  "synced_at": "2026-11-26T00:15:09Z",
   "source": "repository variable SEARCH_LOOP_MODE on seq23/search-loop",
   "values": {
     "normal": "full pace",
