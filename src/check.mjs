@@ -4,7 +4,7 @@
 // merged into a stronger page with a 301.
 import fs from 'node:fs';
 import { seedBook, saveSeedBook, seedList, STRENGTHEN_TRIES } from './seeds.mjs';
-import { productBrief, productClaims, hasProduct } from './product.mjs';
+import { productBrief, productClaims, hasProduct, productName } from './product.mjs';
 import path from 'node:path';
 import { ledger } from './ledger.mjs';
 import { searchAnalytics, inspectUrl, dateDaysAgo } from './gsc.mjs';
@@ -320,7 +320,7 @@ async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, note
   let queries; let ask;
   if (target?.kind === 'seed') {
     queries = [target.query];
-    ask = `People run this search before they pick an app or tool, and this page does not yet answer it directly: "${target.query}".${target.wants?.length ? ` They asked for: ${target.wants.join(', ')}; say plainly whether ${cfg.site_name} has each, from the product facts only.` : ''}${productBrief(cfg)}\nWrite what this page is missing to answer that search directly and fairly. Name no other company or product.`;
+    ask = `People run this search before they pick an app or tool, and this page does not yet answer it directly: "${target.query}".${target.wants?.length ? ` They asked for: ${target.wants.join(', ')}; say plainly whether ${productName(cfg)} has each, from the product facts only.` : ''}${productBrief(cfg)}\nWrite what this page is missing to answer that search directly and fairly. Name no other company or product.`;
   } else if (target?.kind === 'ai_miss') {
     queries = [...new Set(target.prompts)];
     const cited = [...new Set(target.sources)].slice(0, 8);

@@ -241,3 +241,12 @@ test('a seed already built, strengthened or answered is never changed again', ()
   assert.equal(book.seeds.k.status, 'built');
   assert.equal(setSeed(book, 'n', { query: 'n', status: 'queued', reason: 'x' }), true);
 });
+
+test('product.name: the writer and the claim check use the product\'s own name when it is not the site\'s', async () => {
+  const cfg = { ...fixtureConfig('/tmp/x'), product: { ...PRODUCT, name: 'Planner Pro' } };
+  assert.deepEqual(checkConfig({ ...FIXTURE_CONFIG_RAW, product: { ...PRODUCT, name: 'P' } }).filter((p) => /^product\.name/.test(p)).length, 1);
+  let asked = '';
+  const r = await productClaims(cfg, { h1: 'x', direct_answer: 'Planner Pro needs no account.', sections: [], faq: [], facts: [] }, { chat: async ({ messages }) => { asked = messages[1].content; return { ok: true, answer: '{"claims":[]}' }; } });
+  assert.match(asked, /^Product: Planner Pro\./);
+  assert.equal(r.ok, false, 'a page naming the product by its own name with no claim listed is not read');
+});

@@ -15,7 +15,7 @@ import { currentCap, liveEnginePages, recordHeld, CAP_DEFAULTS } from './cap.mjs
 import { corpusFor, matchIntent, matchAnswer, engineAnswers, intentWords, siteWordsOf, answerShingles } from './distinct.mjs';
 import { isProtected, publishedFrozen, approvalOf } from './config.mjs';
 import { laneQueue, laneRatio } from './compete.mjs';
-import { productBrief, productClaims, hasProduct } from './product.mjs';
+import { productBrief, productClaims, hasProduct, productName } from './product.mjs';
 import { markSeed } from './seeds.mjs';
 
 export const DROP_RETRY_DAYS = 28;
@@ -76,8 +76,8 @@ export function draftPrompt(cfg, target, related, problems) {
   // v1.17.0: a hand-given seed is a person choosing an app; it gets the comparison rules too
   // (a rival is named only in a sourced fact), plus what the searcher asked for by name.
   const choosing = Boolean(target.comparison || target.seed);
-  const wants = target.seed?.wants?.length ? `\nThe person searching asked for: ${target.seed.wants.join(', ')}. For each, say plainly whether ${cfg.site_name} has it, using only the facts about ${cfg.site_name} below; never say it has one the facts do not state.` : '';
-  const seedLine = target.seed ? `\nThis is a search people run before they pick an app or tool for this need. Explain how to choose, name where ${cfg.site_name} fits and who it does not fit, and stay fair to the other options.${wants}` : '';
+  const wants = target.seed?.wants?.length ? `\nThe person searching asked for: ${target.seed.wants.join(', ')}. For each, say plainly whether ${productName(cfg)} has it, using only the facts about ${productName(cfg)} below; never say it has one the facts do not state.` : '';
+  const seedLine = target.seed ? `\nThis is a search people run before they pick an app or tool for this need. Explain how to choose, name where ${productName(cfg)} fits and who it does not fit, and stay fair to the other options.${wants}` : '';
   const versus = choosing ? `${seedLine}\nThis search compares options. Name every company, product or service the search or the page names exactly as that company spells it, and list each one in "rivals" (never ${cfg.site_name} itself; [] when the options are not companies or products, such as two methods). Anything you say about a rival (what it does, offers, costs, lacks or its terms) goes in "facts" with the URL of the rival's own page or an independent publication that states it; give one section a "table" ({"columns": ["2-4 short headers"], "rows": [["one cell per column"], ...]}, 2-8 rows) that lays out how to choose: what the reader decides by and which kind of person each option fits, never what a rival offers, costs or lacks; in the rest of the page a rival's name appears only in headings or in a sentence that repeats one of those facts word for word, so the direct answer defines the choice in your own words without naming a rival (for example "Choosing a coaching platform for a sales team is ..."). Never call a rival bad, a scam or worse, never imply ${cfg.site_name} is affiliated with or endorsed by one, and say plainly who each option fits. A rival's own public page (what it is, what it offers) is a fine source. Something about a rival you cannot source is left out: write instead what the reader should check and where, so the page still helps them choose. The page is checked: an unsourced sentence about a rival stops it from being published.` : '';
   return [
     { role: 'system', content: `You write one web page that answers one search for ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Voice (how to write; never copy these sentences into the page): ${cfg.voice}. You return ONLY a JSON object, no prose around it.` },
