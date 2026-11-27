@@ -3,6 +3,8 @@
 // hash and an automatic undo if they get worse; 90 days with no impressions ->
 // merged into a stronger page with a 301.
 import fs from 'node:fs';
+import { seedBook, saveSeedBook, seedList, STRENGTHEN_TRIES } from './seeds.mjs';
+import { productBrief, productClaims, hasProduct } from './product.mjs';
 import path from 'node:path';
 import { ledger } from './ledger.mjs';
 import { searchAnalytics, inspectUrl, dateDaysAgo } from './gsc.mjs';
@@ -29,7 +31,7 @@ export const AI_MISS_PAGES_PER_RUN = 3;
 export const AI_MISS_SETTLE_MAX_DAYS = 28;
 
 // Search Console strengthens a page once ever; an AI-miss strengthen does not use that up.
-const gscStrengthened = (page) => [page.strengthen, ...(page.strengthen_history || [])].some((s) => s && s.trigger !== 'ai_miss');
+const gscStrengthened = (page) => [page.strengthen, ...(page.strengthen_history || [])].some((s) => s && s.trigger !== 'ai_miss' && s.trigger !== 'seed');
 
 export function dueCheckpoints(page, today) {
   const age = daysBetween(page.published_at, today);
@@ -194,6 +196,12 @@ export async function check(cfg, { rules: modeRules, mode, now = new Date(), fet
     res.ai_misses = await strengthenAiMisses(cfg, L, live, ai, { today, now, rules, mode, chat, fetchImpl, index, notes, g });
     res.strengthened += res.ai_misses.strengthened;
   }
+  // v1.17.0 hand-given seeds whose intent a live engine page already has: that page is
+  // strengthened for the seed once (same gate, product check, snapshot and undo), never a second page.
+  if (!frozen) {
+    res.seeds = await strengthenSeeds(cfg, L, live, { today, rules, mode, chat, fetchImpl, index, notes, g });
+    res.strengthened += res.seeds.strengthened;
+  }
   // v1.10.0 REFRESH: due pages get their sources re-checked and one real-search question; a date
   // moves only with a change (risk rule R-ADV-12). Never on a frozen site.
   if (!frozen) res.refresh = await refreshPages(cfg, L, live.filter((p) => p.status === 'live'), { today, now, rules, chat, fetchImpl, index, notes });
@@ -310,7 +318,10 @@ async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, note
     return { ok: false, why: 'edited', reason };
   }
   let queries; let ask;
-  if (target?.kind === 'ai_miss') {
+  if (target?.kind === 'seed') {
+    queries = [target.query];
+    ask = `People run this search before they pick an app or tool, and this page does not yet answer it directly: "${target.query}".${target.wants?.length ? ` They asked for: ${target.wants.join(', ')}; say plainly whether ${cfg.site_name} has each, from the product facts only.` : ''}${productBrief(cfg)}\nWrite what this page is missing to answer that search directly and fairly. Name no other company or product.`;
+  } else if (target?.kind === 'ai_miss') {
     queries = [...new Set(target.prompts)];
     const cited = [...new Set(target.sources)].slice(0, 8);
     ask = `ChatGPT, Gemini or Google AI Overviews answer these buyer questions without naming this page: ${queries.join(' | ')}.\n${cited.length ? `The answers cite: ${cited.join(' ')} (context only; never copy them or name them as sources).\n` : ''}Write what this page is missing to answer those questions directly and completely.`;
@@ -334,11 +345,17 @@ async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, note
     notes.push(`strengthen of ${p.route}: the model added nothing new; the page and its dates are unchanged`);
     return { ok: false, why: 'nothing', reason: 'the model added nothing new; the page and its dates are unchanged' };
   }
-  next.facts = await verifyFacts(next.facts || [], fetchImpl, p.comparison ? next.rivals || [] : []);
+  next.facts = await verifyFacts(next.facts || [], fetchImpl, p.comparison || p.seed ? next.rivals || [] : []);
   const before = fs.readFileSync(file, 'utf8');
   const relatedLinks = relatedLinksOf(before);
   const html = render(cfg, { slug: p.slug, draft: next, related: relatedLinks, published: p.published_at, modified: today });
-  const problems = gate({ query: p.query, html, facts: next.facts, comparison: Boolean(p.comparison), rivals: next.rivals }, { cfg, corpus: index, selfRoute: p.route });
+  const problems = gate({ query: p.query, html, facts: next.facts, comparison: Boolean(p.comparison || p.seed), rivals: next.rivals }, { cfg, corpus: index, selfRoute: p.route });
+  // v1.17.0: the strengthened page is read against the product's own facts too; not read = left as it was.
+  if (!problems.length && hasProduct(cfg)) {
+    const pc = await productClaims(cfg, next, { chat, fetchImpl });
+    if (!pc.ok) { notes.push(`strengthen of ${p.route} left as it was: ${pc.notRead}`); return { ok: false, why: 'model', reason: pc.notRead }; }
+    problems.push(...pc.problems);
+  }
   if (problems.length) { notes.push(`strengthen of ${p.route} failed the gate, left as it was: ${problems.slice(0, 2).join('; ')}`); return { ok: false, why: 'gate', reason: `failed the gate, left as it was: ${problems.slice(0, 2).join('; ')}` }; }
   const bh = sha256(before);
   fs.mkdirSync(path.dirname(L.snapshotPath(bh)), { recursive: true });
@@ -347,7 +364,7 @@ async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, note
   fs.writeFileSync(draftFile, JSON.stringify(next, null, 2) + '\n');
   p.modified_at = today;
   if (p.strengthen) p.strengthen_history = [...(p.strengthen_history || []), p.strengthen].slice(-10);
-  p.strengthen = { at: today, before_hash: bh, after_hash: sha256(html), baseline_position: snap.position ?? null, queries, ...(target?.kind === 'ai_miss' ? { trigger: 'ai_miss', ai_miss_ids: target.ids, week: target.week } : {}) };
+  p.strengthen = { at: today, before_hash: bh, after_hash: sha256(html), baseline_position: snap.position ?? null, queries, ...(target?.kind === 'ai_miss' ? { trigger: 'ai_miss', ai_miss_ids: target.ids, week: target.week } : {}), ...(target?.kind === 'seed' ? { trigger: 'seed' } : {}) };
   return { ok: true };
 }
 
@@ -445,4 +462,34 @@ export function addRedirect(cfg, p, target) {
     if (!cur.includes(line)) fs.writeFileSync(file, cur.replace(/\n?$/, '\n') + line + '\n');
   }
   return line;
+}
+
+// v1.17.0: seeds in seeds.json with status "strengthen" (FIND or BUILD found a live engine page
+// with the same intent). One strengthen per seed: done -> strengthened; the page already says it
+// or was edited by hand -> answered_by; no model -> tried next run; a gate or product-claim
+// failure is retried up to STRENGTHEN_TRIES times, then the page is recorded as the answer.
+export const SEED_PAGES_PER_RUN = 3;
+export async function strengthenSeeds(cfg, L, live, { today, rules, mode, chat, fetchImpl, index, notes, g }) {
+  const out = { strengthened: 0, pages: [] };
+  const book = seedBook(L);
+  const wanted = new Map(seedList(cfg).map((s) => [s.key, s]));
+  let done = 0;
+  for (const [key, rec] of Object.entries(book.seeds)) {
+    if (rec.status !== 'strengthen' || !wanted.has(key)) continue;
+    const p = live.find((x) => x.status === 'live' && (x.route === rec.route || x.url === rec.url));
+    const later = (reason) => { book.seeds[key] = { ...rec, reason }; };
+    if (!p) { book.seeds[key] = { ...rec, status: 'refused', at: today, reason: `the engine page ${rec.url} is no longer live` }; continue; }
+    if (!rules.strengthen) { later(`waits: mode=${mode} does not strengthen pages`); continue; }
+    if (p.strengthen && !p.strengthen.verdict) { later(`waits: a strengthen on ${p.route} from ${p.strengthen.at} is still settling`); continue; }
+    if (done >= SEED_PAGES_PER_RUN || pastSoft()) { later('waits: this run\'s strengthen limit or time budget was used; the next run takes it'); continue; }
+    const position = g?.map?.get(p.url)?.position ?? null;
+    const r = await strengthen(cfg, L, p, { position }, { today, chat, fetchImpl, index, notes, target: { kind: 'seed', query: wanted.get(key).query, wants: wanted.get(key).wants } });
+    if (r.ok) { done++; out.strengthened++; out.pages.push(p.url); book.seeds[key] = { ...rec, status: 'strengthened', at: today, url: p.url, route: p.route, reason: undefined }; notes.push(`seeds: strengthened ${p.route} for "${wanted.get(key).query}"`); continue; }
+    if (r.why === 'model') { later(`waits: ${r.reason}`); continue; }
+    if (r.why === 'nothing' || r.why === 'edited' || r.why === 'missing') { book.seeds[key] = { ...rec, status: 'answered_by', at: today, url: p.url, route: p.route, reason: r.reason }; continue; }
+    const tries = (rec.tries || 0) + 1;
+    book.seeds[key] = tries >= STRENGTHEN_TRIES ? { ...rec, status: 'answered_by', at: today, url: p.url, route: p.route, tries, reason: `${STRENGTHEN_TRIES} strengthens failed the gate (${r.reason}); the page stays as it was and answers the seed` } : { ...rec, tries, reason: `strengthen try ${tries} of ${STRENGTHEN_TRIES} failed: ${r.reason}` };
+  }
+  saveSeedBook(L, book);
+  return out;
 }

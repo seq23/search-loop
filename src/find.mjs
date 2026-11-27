@@ -3,10 +3,11 @@
 // lanes (compete.mjs): can_be_one (competition score) or striking (scoreCandidate). A signal we could not read is written as
 // "not read: <reason>", never invented.
 import { searchAnalytics, dateDaysAgo, comparisonFilter } from './gsc.mjs';
-import { norm, contentWords, tokenOverlap, fetchText, sleep, isoWeek, pastSoft, progress } from './util.mjs';
+import { norm, contentWords, tokenOverlap, fetchText, sleep, isoWeek, pastSoft, progress, centralDate } from './util.mjs';
 import { ledger } from './ledger.mjs';
 import { buildIndex } from './site-index.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
+import { seedList, seedBook, saveSeedBook, setSeed, DONE as SEED_DONE } from './seeds.mjs';
 import { easyWins, placeVariants, gscCompetition, canBeOneScore, readTop10, weightsOf, laneRatio, assignLanes, COMPETE_DEFAULTS } from './compete.mjs';
 
 export const QUESTION_PREFIXES = ['how to', 'what is', 'why', 'can', 'is', 'best way to'];
@@ -202,6 +203,19 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
     c.signals.ai_miss = true;
   }
 
+  // 0b. Hand-given searches (config `seeds`, v1.17.0): the searches ChatGPT runs before it
+  //     recommends an app in this site's category. Each goes through every check below like a
+  //     found search; one already built, strengthened or answered is not asked again.
+  const seedsOut = new Map();
+  const sbook = seedBook(L);
+  for (const s of seedList(cfg)) {
+    if (SEED_DONE.has(sbook.seeds[s.key]?.status)) continue;
+    const c = add(s.query, {});
+    if (!c) { seedsOut.set(s.key, { query: s.query, status: 'refused', reason: 'not a page-sized search (too short or long, a navigation search, or a find.exclude_words word)' }); continue; }
+    c.signals.seed = true;
+    c.seed = { query: s.query, wants: s.wants, key: s.key };
+  }
+
   // 1. Search Console rows at positions ~8-30 (measured).
   const gscSite = cfg.gsc?.site_url || process.env[cfg.gsc?.site_url_env || 'GSC_SITE_URL'] || null;
   const measured = [];
@@ -300,12 +314,25 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
   const strengthen = [];
   let droppedShared = 0;
   const aiSkip = (c, reason) => { for (const id of c.ai_miss_ids || []) aiOutcome.set(id, { action: 'skipped', reason }); };
+  // A seed whose intent a live engine page already has strengthens that page (CHECK); one a
+  // hand-built page answers is recorded there (the engine never edits a hand-built page).
+  const seedTo = (c, rec) => { if (c.seed) seedsOut.set(c.seed.key, { query: c.seed.query, ...rec }); };
+  const liveEngine = (route) => engine.find((p) => p.route === route && p.status === 'live');
   for (const c of cands.values()) {
     const dup = engine.find((p) => intentKey(p.query) === intentKey(c.query));
-    if (dup) { aiSkip(c, `an engine page already has this intent: ${dup.route}`); continue; }
+    if (dup) {
+      aiSkip(c, `an engine page already has this intent: ${dup.route}`);
+      if (dup.status === 'live') seedTo(c, { status: 'strengthen', url: dup.url, route: dup.route, reason: `same intent as the engine page ${dup.url}: strengthened there, not a second page` });
+      else seedTo(c, { status: 'refused', reason: `an engine page with this intent was ${dup.status} (${dup.route})` });
+      continue;
+    }
     const covering = index.find((p) => coverage(p, c.query, siteWords) >= 0.85);
-    if (claimedElsewhere(c.query, cfg, claims)) { aiSkip(c, 'a sibling site with the same audience already holds this search'); droppedShared++; continue; }
+    if (claimedElsewhere(c.query, cfg, claims)) { aiSkip(c, 'a sibling site with the same audience already holds this search'); seedTo(c, { status: 'refused', reason: 'a sibling site with the same audience already holds this search' }); droppedShared++; continue; }
     if (covering) aiSkip(c, `the site already answers it at ${covering.route} (a strengthen candidate)`);
+    if (covering) {
+      const eng = liveEngine(covering.route);
+      seedTo(c, eng ? { status: 'strengthen', url: eng.url, route: eng.route, reason: `the engine page ${eng.url} already covers it: strengthened there, not a second page` } : { status: 'answered_by', url: cfg.base_url + covering.route, route: covering.route, reason: 'a hand-built page on the site already answers it; the engine never edits hand-built pages' });
+    }
     c.scores = { striking: scoreCandidate(c.signals) };
     const covered = Math.max(0, ...index.map((p) => coverage(p, c.query, siteWords)));
     Object.assign(c.signals, gscCompetition(c, { wins, measured, covered }));
@@ -317,7 +344,7 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
   // the screen sees the best of both lanes
   const byOne = [...targets].sort((a, b) => b.scores.can_be_one - a.scores.can_be_one);
   targets.sort((a, b) => b.score - a.score);
-  const pool = [...new Set([...targets.filter((t) => t.ai_miss_ids).slice(0, 50), ...targets.filter((t) => t.signals.comparison_pull).slice(0, 50), ...targets.filter((t) => t.priority).slice(0, 75), ...byOne.slice(0, 75).filter((t) => t.scores.can_be_one > 0), ...targets])].slice(0, 150);
+  const pool = [...new Set([...targets.filter((t) => t.ai_miss_ids).slice(0, 50), ...targets.filter((t) => t.signals.comparison_pull).slice(0, 50), ...targets.filter((t) => t.seed), ...targets.filter((t) => t.priority).slice(0, 75), ...byOne.slice(0, 75).filter((t) => t.scores.can_be_one > 0), ...targets])].slice(0, 150);
   const screen = pool.length ? await relevanceScreen(cfg, pool, { chat, fetchImpl }) : { keep: new Set() };
   let screened = targets;
   const cmpRows = targets.filter((t) => t.signals.comparison_pull);
@@ -325,12 +352,15 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
     receipt.sources.relevance_screen = `not read: ${screen.notRead} (lexical floor only)`;
     // A search only the comparison pull found was never measured in the normal window and never
     // asked of autocomplete: with no model to read it, it is not built this run.
-    screened = targets.filter((t) => !t.signals.comparison_only);
+    // A seed was never measured or asked of autocomplete either: no model, no seed page this run.
+    screened = targets.filter((t) => !t.signals.comparison_only && !t.seed);
+    for (const t of targets) if (t.seed) seedTo(t, { status: 'queued', reason: `not built this run: the free-model relevance screen was not read (${screen.notRead})` });
   } else {
     // Measured rows stand without the keep vote, as before; a comparison-pull row is measured too
     // (Search Console shows the site for it), so the model's comparison read is its vote (v1.16.0).
     screened = pool.filter((t) => screen.keep.has(t) || t.signals.gsc_position || (t.signals.comparison_pull && screen.comparison?.has(t)));
     receipt.sources.relevance_screen = `ok: kept ${screened.length} of ${pool.length} (free model)`;
+    for (const t of targets) if (t.seed && !screened.includes(t)) seedTo(t, { status: 'refused', reason: 'the free-model relevance screen kept it off this site\'s list (not this audience, or someone else\'s brand)' });
   }
   // 5. Optional top-10 read for the best can-be-#1 candidates (off without a key),
   //    then the lanes: about 2 of 3 can_be_one, 1 of 3 striking (config competition.lanes).
@@ -349,6 +379,7 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
     if (t.priority) t.reasons = [`priority topic "${t.priority}" (find.priority_topics): built before other searches`, ...t.reasons];
     if (t.signals.comparison_pull && screen.comparison?.has(t)) t.comparison = true;
     if (t.comparison) t.reasons = [`comparison search: Search Console shows people choosing between options here (position ${t.signals.comparison_position}, ${t.signals.comparison_impressions} impressions); built after AI answer misses, before other searches`, ...t.reasons];
+    if (t.seed) t.reasons = ['hand-given search (config seeds): a search ChatGPT runs before it recommends an app here; built after comparison searches, before priority topics', ...t.reasons];
     if (t.ai_miss_ids) t.reasons = ['AI answer miss: ChatGPT, Gemini or AI Overviews answer this without the site and no page fits; built first', ...t.reasons];
     if (!t.signals.top10) t.signals.top10 = receipt.sources.top10?.startsWith('not read') ? receipt.sources.top10 : 'not read: outside this run\'s top-10 budget';
   }
@@ -356,8 +387,9 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
   // Priority searches lead the list (and survive the max_targets cut); BUILD takes them first.
   // AI answer misses first, then priority searches.
   // v1.16.0: comparison searches the model confirmed come next, before priority topics.
-  const tier = (t) => (t.ai_miss_ids ? 0 : t.comparison ? 1 : t.priority ? 2 : 3);
-  screened = [0, 1, 2, 3].flatMap((n) => screened.filter((t) => tier(t) === n));
+  // v1.17.0: hand-given seeds come right after comparisons, before priority topics.
+  const tier = (t) => (t.ai_miss_ids ? 0 : t.comparison ? 1 : t.seed ? 2 : t.priority ? 3 : 4);
+  screened = [0, 1, 2, 3, 4].flatMap((n) => screened.filter((t) => tier(t) === n));
   const nPri = receipt.seeds.priority_topics;
   receipt.seeds.priority_targets = screened.filter((t) => t.priority).length;
   if (nPri && !receipt.seeds.priority_targets) receipt.notes.push(`NAMED NOTE [FIND_PRIORITY_EMPTY] the site's ${nPri} priority topic(s) produced no new search this week (${[...cands.values()].filter((c) => c.priority).length} candidate(s) before the site-coverage check and the relevance screen); the other topics still build`);
@@ -379,6 +411,13 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
     aiOutcome.set(id, kept.has(id) ? { action: 'candidate', prompt: t.query } : passed.has(id) ? { action: 'skipped', reason: `past this week's ${cfg.find.max_targets}-search limit` } : { action: 'skipped', reason: 'the relevance screen kept it off this site\'s list' });
   }
   for (const m of aiMisses) if (!aiOutcome.has(m.id)) aiOutcome.set(m.id, { action: 'skipped', reason: 'dropped by FIND' });
+  // Seeds: queued (on the list for BUILD), past the list's limit, or what happened above.
+  const listed = new Set(out.targets);
+  for (const t of screened) if (t.seed && !seedsOut.has(t.seed.key)) seedTo(t, listed.has(t) ? { status: 'queued', reason: 'on this week\'s list for BUILD' } : { status: 'queued', reason: `past this week's ${cfg.find.max_targets}-search limit; the next FIND lists it again` });
+  for (const s of seedList(cfg)) if (!SEED_DONE.has(sbook.seeds[s.key]?.status) && !seedsOut.has(s.key)) seedsOut.set(s.key, { query: s.query, status: 'refused', reason: 'dropped by FIND (its words fold into another search on the list, or it failed the lexical checks)' });
+  for (const [k, v] of seedsOut) setSeed(sbook, k, { ...v, at: centralDate(now) });
+  if (seedsOut.size) saveSeedBook(L, sbook);
+  receipt.seeds_given = seedList(cfg).length ? { configured: seedList(cfg).length, queued: out.targets.filter((t) => t.seed).length } : undefined;
   if (aiMisses.length) receipt.ai_misses = Object.fromEntries(aiOutcome);
   L.write('targets', out);
   L.write('receipt', receipt);

@@ -7,6 +7,7 @@ import { OFF_SENTENCE } from './mode.mjs';
 import { currentCap, heldThisWeek, liveEnginePages } from './cap.mjs';
 import { laneStats, laneRatio, WEIGHT_DEFAULTS } from './compete.mjs';
 import { aiMissesBlock, checkAiMissesBlock } from './ai-misses.mjs';
+import { seedsBlock, checkSeedsBlock } from './seeds.mjs';
 
 export const REPORT_SCHEMA = 'search-loop-week-v1';
 export const REPORT_FIELDS = ['site', 'generated_at', 'state', 'published', 'indexed', 'pace', 'ai_visitors', 'ai_bot_hits', 'conversions', 'wins', 'undone', 'merged', 'held_by_cap', 'redirected', 'cap', 'notes', 'run_url'];
@@ -72,6 +73,8 @@ export function buildReport(cfg, { mode, effectivePace, notes = [], stopped = fa
     ai_misses: aiMissesBlock(L, { now, run: ai }),
     // v1.16.0 (additive): this week's Search Console comparison searches and which were queued first.
     comparison: comparisonBlock(L),
+    // v1.17.0 (additive): every hand-given seed's outcome (built, strengthened, answered, refused, queued).
+    seeds: seedsBlock(cfg, L),
     run_url: process.env.GITHUB_RUN_ID ? `${process.env.GITHUB_SERVER_URL || 'https://github.com'}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : null,
   };
   return r;
@@ -107,6 +110,7 @@ export function checkReport(r) {
     }
   }
   if (r && 'ai_misses' in r) p.push(...checkAiMissesBlock(r.ai_misses));
+  if (r && 'seeds' in r) p.push(...checkSeedsBlock(r.seeds));
   if (r && 'comparison' in r) {
     const c = r.comparison;
     if (typeof c === 'string' ? !c.startsWith('not read: ') : !(c && typeof c.pulled === 'string' && Number.isInteger(c.candidates) && (Number.isInteger(c.confirmed) || String(c.confirmed).startsWith('not read: ')) && Array.isArray(c.queued))) p.push('comparison must be "not read: <reason>" or {pulled, candidates, confirmed (a number or "not read: <reason>"), queued: [...]}');

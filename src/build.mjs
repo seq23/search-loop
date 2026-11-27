@@ -15,6 +15,8 @@ import { currentCap, liveEnginePages, recordHeld, CAP_DEFAULTS } from './cap.mjs
 import { corpusFor, matchIntent, matchAnswer, engineAnswers, intentWords, siteWordsOf, answerShingles } from './distinct.mjs';
 import { isProtected, publishedFrozen, approvalOf } from './config.mjs';
 import { laneQueue, laneRatio } from './compete.mjs';
+import { productBrief, productClaims, hasProduct } from './product.mjs';
+import { markSeed } from './seeds.mjs';
 
 export const DROP_RETRY_DAYS = 28;
 // A drop whose every problem is one the next draft can fix (a length aim, too few
@@ -71,12 +73,17 @@ export function draftPrompt(cfg, target, related, problems) {
   // v1.16.0: a comparison search names other companies' products. Every claim about one is a sourced
   // fact (risk brain: claims about another company need a source), and the gate checks it by the
   // names the model lists in "rivals".
-  const versus = target.comparison ? `\nThis search compares options. Name every company, product or service the search or the page names exactly as that company spells it, and list each one in "rivals" (never ${cfg.site_name} itself; [] when the options are not companies or products, such as two methods). Anything you say about a rival (what it does, offers, costs, lacks or its terms) goes in "facts" with the URL of the rival's own page or an independent publication that states it; give one section a "table" ({"columns": ["2-4 short headers"], "rows": [["one cell per column"], ...]}, 2-8 rows) that lays out how to choose: what the reader decides by and which kind of person each option fits, never what a rival offers, costs or lacks; in the rest of the page a rival's name appears only in headings or in a sentence that repeats one of those facts word for word, so the direct answer defines the choice in your own words without naming a rival (for example "Choosing a coaching platform for a sales team is ..."). Never call a rival bad, a scam or worse, never imply ${cfg.site_name} is affiliated with or endorsed by one, and say plainly who each option fits. A rival's own public page (what it is, what it offers) is a fine source. Something about a rival you cannot source is left out: write instead what the reader should check and where, so the page still helps them choose. The page is checked: an unsourced sentence about a rival stops it from being published.` : '';
+  // v1.17.0: a hand-given seed is a person choosing an app; it gets the comparison rules too
+  // (a rival is named only in a sourced fact), plus what the searcher asked for by name.
+  const choosing = Boolean(target.comparison || target.seed);
+  const wants = target.seed?.wants?.length ? `\nThe person searching asked for: ${target.seed.wants.join(', ')}. For each, say plainly whether ${cfg.site_name} has it, using only the facts about ${cfg.site_name} below; never say it has one the facts do not state.` : '';
+  const seedLine = target.seed ? `\nThis is a search people run before they pick an app or tool for this need. Explain how to choose, name where ${cfg.site_name} fits and who it does not fit, and stay fair to the other options.${wants}` : '';
+  const versus = choosing ? `${seedLine}\nThis search compares options. Name every company, product or service the search or the page names exactly as that company spells it, and list each one in "rivals" (never ${cfg.site_name} itself; [] when the options are not companies or products, such as two methods). Anything you say about a rival (what it does, offers, costs, lacks or its terms) goes in "facts" with the URL of the rival's own page or an independent publication that states it; give one section a "table" ({"columns": ["2-4 short headers"], "rows": [["one cell per column"], ...]}, 2-8 rows) that lays out how to choose: what the reader decides by and which kind of person each option fits, never what a rival offers, costs or lacks; in the rest of the page a rival's name appears only in headings or in a sentence that repeats one of those facts word for word, so the direct answer defines the choice in your own words without naming a rival (for example "Choosing a coaching platform for a sales team is ..."). Never call a rival bad, a scam or worse, never imply ${cfg.site_name} is affiliated with or endorsed by one, and say plainly who each option fits. A rival's own public page (what it is, what it offers) is a fine source. Something about a rival you cannot source is left out: write instead what the reader should check and where, so the page still helps them choose. The page is checked: an unsourced sentence about a rival stops it from being published.` : '';
   return [
     { role: 'system', content: `You write one web page that answers one search for ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Voice (how to write; never copy these sentences into the page): ${cfg.voice}. You return ONLY a JSON object, no prose around it.` },
     { role: 'user', content: `Search to answer: "${target.query}"
 Existing pages on the site you may mention by name (do not invent others): ${related.map((r) => pageName(cfg, r)).join(' | ') || 'none'}
-The page ends by inviting the reader to: ${cfg.action.label}.${facts}${local}${versus}
+The page ends by inviting the reader to: ${cfg.action.label}.${facts}${local}${productBrief(cfg)}${versus}
 
 Return JSON with exactly these keys:
 {
@@ -87,7 +94,7 @@ Return JSON with exactly these keys:
  "sections": [ {"heading": "a question people ask about this", "paragraphs": ["120-180 words", "..."], "bullets": ["optional: 3-6 short list items"]} ],  // 4-5 sections, 650+ words in total; at least one section has "bullets"
  "faq": [ {"q": "a related question", "a": "${LIMITS.faqAnswer[0]}-${LIMITS.faqAnswer[1]} words"} ],  // exactly 4
  "facts_heading": "a short heading for the facts below, in the page's voice, that says what they help the reader do (for example 'Before you plan the food table'); never 'What the sources say', 'Sources' or 'Facts'",
- "facts": [ {"claim": "one checkable fact, in one plain sentence, that this reader can act on for this search (a safety rule, a timing, a local rule or condition that changes their plan); never trivia such as which county a town is in or how big it is", "source_url": "https URL of the exact public page that states it (government, university, major publication)", "source_name": "publisher name"} ]  // 2-4, from at least 2 different sources${target.comparison ? ',\n "rivals": ["each other company, product or service the page names"]' : ''}
+ "facts": [ {"claim": "one checkable fact, in one plain sentence, that this reader can act on for this search (a safety rule, a timing, a local rule or condition that changes their plan); never trivia such as which county a town is in or how big it is", "source_url": "https URL of the exact public page that states it (government, university, major publication)", "source_name": "publisher name"} ]  // 2-4, from at least 2 different sources${choosing ? ',\n "rivals": ["each other company, product or service the page names"]' : ''}
 }
 If this search does not fit the audience or the site (a different meaning of the words, someone else's brand), return {"skip":"why"} instead.
 Hard rules: no statistics, percentages or "studies show" anywhere except inside "facts"; no prices, fees or money amounts (in digits or words, e.g. "$49" or "forty-nine dollars") anywhere except inside "facts" with a source that states them; no named people, quotes, doctors, credentials, reviews, testimonials or star ratings; no sentence or phrase repeated anywhere on the page (say each thing once, in words only this page would use); no promises of outcomes${cfg.health_gate !== 'none' ? '; no treatment or outcome claims, never "painless", no medical advice, no hours or services beyond the real facts' : ''}; no filler; second person, short sentences.${problems ? `\n\nYour previous draft failed these checks; fix every one:\n- ${problems.join('\n- ')}` : ''}` },
@@ -210,7 +217,13 @@ export function perDayLimit(cfg, rules) {
 // Same intent as an existing page: no new page. The brief goes on the existing
 // strengthen path (targets.json "strengthen", and the engine page's own
 // strengthen queries) and into pages.json "redirected" for the week report.
-export function redirectToStrengthen(L, book, target, match, { today, stage, frozen = false }) {
+export function redirectToStrengthen(L, book, target, match, { today, stage, frozen = false, cfg = null }) {
+  if (cfg && target.seed) {
+    const eng = !frozen && book.pages.find((p) => p.route === match.route && p.status === 'live');
+    markSeed(L, cfg, target.query, eng
+      ? { status: 'strengthen', at: today, url: eng.url, route: eng.route, reason: `same intent as the engine page ${eng.url} (${match.by}): strengthened there, not a second page` }
+      : { status: 'answered_by', at: today, url: match.url, route: match.route, reason: frozen ? 'same intent as a page on a site whose published pages are frozen' : `same intent as ${match.url} (${match.by}), a page the engine does not edit` });
+  }
   if (frozen) {
     // Published pages frozen on this site: the search is simply skipped; no brief touches the existing page.
     const rec = { query: target.query, at: today, reason: [`same intent as ${match.url} (${match.by}); skipped, published pages are frozen on this site`] };
@@ -321,16 +334,18 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
   // v1.16.0: comparison searches the free-model screen confirmed come next, before priority topics.
   const lanesAi = laneQueue(queue.filter(aiMiss), laneRatio(cfg), laneMade);
   const lanesCmp = laneQueue(queue.filter((t) => !aiMiss(t) && t.comparison), laneRatio(cfg), laneMade);
-  const lanesFirst = laneQueue(queue.filter((t) => !aiMiss(t) && !t.comparison && t.priority), laneRatio(cfg), laneMade);
-  const lanesRest = laneQueue(queue.filter((t) => !aiMiss(t) && !t.comparison && !t.priority), laneRatio(cfg), laneMade);
-  const lanes = { next: () => lanesAi.next() || lanesCmp.next() || lanesFirst.next() || lanesRest.next() };
+  // v1.17.0: hand-given seeds right after comparisons, before priority topics.
+  const lanesSeed = laneQueue(queue.filter((t) => !aiMiss(t) && !t.comparison && t.seed), laneRatio(cfg), laneMade);
+  const lanesFirst = laneQueue(queue.filter((t) => !aiMiss(t) && !t.comparison && !t.seed && t.priority), laneRatio(cfg), laneMade);
+  const lanesRest = laneQueue(queue.filter((t) => !aiMiss(t) && !t.comparison && !t.seed && !t.priority), laneRatio(cfg), laneMade);
+  const lanes = { next: () => lanesAi.next() || lanesCmp.next() || lanesSeed.next() || lanesFirst.next() || lanesRest.next() };
   for (let target = lanes.next(); target; target = lanes.next()) {
     if (made() >= room) { heldStop = true; break; }
     if (made() >= result.quota || result.attempted >= result.quota * 2 + 2 || considered >= result.quota * 6 + 10) break;
     considered++;
     // Distinct intent gate, before any model call: same intent as an existing page -> strengthen brief.
     const pre = matchIntent(cfg, target.query, corpus);
-    if (pre) { redirectToStrengthen(L, book, target, pre, { today, stage: 'search', frozen }); if (frozen) result.skipped_same_intent = (result.skipped_same_intent || 0) + 1; else result.redirected++; continue; }
+    if (pre) { redirectToStrengthen(L, book, target, pre, { today, stage: 'search', frozen, cfg }); if (frozen) result.skipped_same_intent = (result.skipped_same_intent || 0) + 1; else result.redirected++; continue; }
     if (pastSoft()) { notes.push(`NAMED NOTE [RUN_TIME_BUDGET] BUILD stopped at the run's time budget after ${result.attempted} search(es); the rest stay queued for the next run`); break; }
     result.attempted++;
     progress('build', `page ${result.attempted} (quota ${result.quota}): "${target.query}"`);
@@ -340,7 +355,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     if (fs.existsSync(path.join(cfg.root, rel)) || (appr && fs.existsSync(path.join(cfg.root, appr.pending_dir, rel))) || isProtected(cfg, rel)) { book.dropped.push({ query: target.query, at: today, reason: 'path exists or is protected' }); result.dropped++; continue; }
     const related = pickRelated(cfg, index, target.query, { n: 3 });
     const seed = lastProblems.get(keyOf(target.query)) || null;
-    let problems = null; let html = null; let draft = null; let gateNotes = []; let passing = null;
+    let problems = null; let html = null; let draft = null; let gateNotes = []; let passing = null; let claimNotRead = null;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const r = await chat({ cfg, messages: draftPrompt(cfg, target, related, problems || seed), fetchImpl });
       if (!r.ok) {
@@ -364,12 +379,20 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
       draft = cleanDraft(parsed);
       if (!draft) { problems = ['the answer was not the JSON object asked for, with every key filled']; continue; }
       draft.meta_description = fitMeta(draft.meta_description);
-      draft.facts = await verifyFacts(draft.facts, fetchImpl, target.comparison ? draft.rivals || [] : []);
+      const choosing = Boolean(target.comparison || target.seed);
+      draft.facts = await verifyFacts(draft.facts, fetchImpl, choosing ? draft.rivals || [] : []);
       html = render(cfg, { slug, draft, related: related.map((p) => ({ route: p.route, anchor: p.h1 || p.title })), published: today });
       // Distinct intent gate, after drafting: the H1 the model chose, and the answer it gave.
       const post = matchIntent(cfg, draft.h1, corpus) || matchAnswer(cfg, draft.direct_answer, answers);
       if (post) { draft = null; html = null; problems = null; target.__redirect = post; break; }
-      ({ problems, notes: gateNotes } = gateReport({ query: target.query, html, facts: draft.facts, comparison: Boolean(target.comparison), rivals: draft.rivals }, { cfg, corpus: index, siblings, selfRoute: route }));
+      ({ problems, notes: gateNotes } = gateReport({ query: target.query, html, facts: draft.facts, comparison: choosing, rivals: draft.rivals }, { cfg, corpus: index, siblings, selfRoute: route }));
+      // v1.17.0: a draft that passed every other check is read against the product's own facts.
+      // Not read (no free model, a bad answer) = no page this run; the search stays queued.
+      if (!problems.length && hasProduct(cfg)) {
+        const pc = await productClaims(cfg, draft, { chat, fetchImpl });
+        if (!pc.ok) { claimNotRead = pc.notRead; html = null; problems = null; draft = null; break; }
+        problems.push(...pc.problems);
+      }
       // A missing heading is asked for again, but on the last try it is a note: the page still
       // shows its facts, below the FAQ under "Sources" (render.mjs), so it ships rather than drops.
       if (!draft.facts_heading && draft.facts.some((f) => f.verified)) (attempt < MAX_ATTEMPTS - 1 ? problems : gateNotes).push('facts: needs a facts_heading that says, in the page\'s voice, what the facts help the reader do');
@@ -385,10 +408,17 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     if (passing && (!html || problems?.length || target.__redirect || !DEFINES.test(draft?.direct_answer || ''))) {
       ({ html, draft, gateNotes } = passing); problems = []; delete target.__redirect;
     }
-    if (target.__redirect) { const m = target.__redirect; delete target.__redirect; redirectToStrengthen(L, book, target, m, { today, stage: 'draft', frozen }); if (frozen) result.skipped_same_intent = (result.skipped_same_intent || 0) + 1; else result.redirected++; continue; }
+    if (target.__redirect) { const m = target.__redirect; delete target.__redirect; redirectToStrengthen(L, book, target, m, { today, stage: 'draft', frozen, cfg }); if (frozen) result.skipped_same_intent = (result.skipped_same_intent || 0) + 1; else result.redirected++; continue; }
+    if (claimNotRead && !html) {
+      result.model_failed = (result.model_failed || 0) + 1;
+      notes.push(`BUILD: "${target.query}" not written: ${claimNotRead}; it stays queued for the next run`);
+      markSeed(L, cfg, target.query, { status: 'queued', at: today, reason: `not written yet: ${claimNotRead}` });
+      continue;
+    }
     if (!html && !problems) { result.model_failed = (result.model_failed || 0) + 1; continue; } // model never answered: retry next run, not a drop
     if (!html || problems?.length) {
       book.dropped.push({ query: target.query, at: today, gate: GATE_VERSION, reason: (problems || ['no draft from the free model']).slice(0, 5) });
+      markSeed(L, cfg, target.query, { status: 'queued', at: today, reason: `dropped by the page gate, tried again later: ${String((problems || ['no draft from the free model'])[0]).slice(0, 200)}` });
       result.dropped++;
       continue;
     }
@@ -417,10 +447,12 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     result.related_links += linkedFrom.length;
     if (appr) {
       book.pages.push({ slug, query: target.query, lane: target.lane || 'striking', ...(target.priority ? { priority: target.priority } : {}), ...(target.comparison ? { comparison: true } : {}), score: target.score, scores: target.scores, reasons: target.reasons || [], signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: null, queued_at: today, status: 'pending_approval', pending_rel: path.posix.join(appr.pending_dir, rel), hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: [], checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
+      markSeed(L, cfg, target.query, { status: 'queued', at: today, reason: `written to the owners' approval queue (${appr.pending_dir}); live once approved` });
       result.queued++; laneMade[target.lane || 'striking']++;
       continue;
     }
-    book.pages.push({ slug, query: target.query, lane: target.lane || 'striking', ...(target.priority ? { priority: target.priority } : {}), ...(target.comparison ? { comparison: true } : {}), score: target.score, scores: target.scores, reasons: target.reasons || [], signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: today, status: 'live', hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: linkedFrom, checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
+    markSeed(L, cfg, target.query, { status: 'built', at: today, url: pageUrl(cfg, slug), route });
+    book.pages.push({ slug, query: target.query, lane: target.lane || 'striking', ...(target.priority ? { priority: target.priority } : {}), ...(target.comparison ? { comparison: true } : {}), ...(target.seed ? { seed: true } : {}), score: target.score, scores: target.scores, reasons: target.reasons || [], signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: today, status: 'live', hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: linkedFrom, checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
     result.published++; laneMade[target.lane || 'striking']++;
     if (gateNotes.length) result.noted = (result.noted || 0) + 1;
   }

@@ -1,6 +1,8 @@
 // Per-site config: search-loop.config.json in the site repo. One definition of
 // what a valid config is; validators/validate.mjs and the CLI both call it.
 import fs from 'node:fs';
+import { checkSeeds } from './seeds.mjs';
+import { checkProduct } from './product.mjs';
 import path from 'node:path';
 import { CAP_DEFAULTS, DISTINCT_DEFAULTS, COMPETE_DEFAULTS } from './defaults.mjs';
 
@@ -93,6 +95,8 @@ export function checkConfig(c) {
   const t10 = { ...COMPETE_DEFAULTS.top10, ...(comp.top10 || {}) };
   need(['brave', 'none'].includes(t10.provider), 'competition.top10.provider must be brave | none');
   need(Number.isInteger(t10.daily_budget) && t10.daily_budget >= 0 && Number.isInteger(t10.monthly_budget) && t10.monthly_budget >= 0, 'competition.top10.daily_budget / monthly_budget: whole numbers >= 0 (a site can lower its share, never raise it past the fleet ceiling)');
+  // v1.17.0: hand-given searches and the product's own facts.
+  p.push(...checkSeeds(c), ...checkProduct(c));
   const lowered = [...(c.protected_paths || [])].map(String);
   if (o.dir) need(!lowered.some((pp) => pp === o.dir || o.dir.startsWith(pp + '/')), 'output.dir sits inside a protected path');
   return p;
