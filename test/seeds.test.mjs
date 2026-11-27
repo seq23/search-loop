@@ -11,6 +11,7 @@ import { run } from '../bin/search-loop.mjs';
 import { checkReport } from '../src/report.mjs';
 import { checkConfig } from '../src/config.mjs';
 import { productClaims } from '../src/product.mjs';
+import { setSeed } from '../src/seeds.mjs';
 import { FIXTURE_CONFIG_RAW, fixtureConfig } from '../src/fixture.mjs';
 import { site, fakeFetch, distinctChat, NOW } from './harness.mjs';
 
@@ -23,7 +24,7 @@ const NORMAL = [row('how to plan my week as a founder', 12, 40)];
 
 // One fake free model for every call the engine makes: the relevance screen, the product-claim
 // check, strengthen, and drafts. `claim` decides whether a sentence about the product is supported.
-function chatFor({ screenDown = false, claimsDown = false, isComparison = () => false, isKept = () => true, sayOffline = false, claim = (s) => !/offline/i.test(s), calls = { screen: 0, claims: 0, drafts: [], strengthen: 0 } } = {}) {
+function chatFor({ strengthenOffline = false, screenDown = false, claimsDown = false, isComparison = () => false, isKept = () => true, sayOffline = false, claim = (s) => !/offline/i.test(s), calls = { screen: 0, claims: 0, drafts: [], strengthen: 0 } } = {}) {
   const draft = distinctChat();
   return Object.assign(async (args) => {
     const sys = args.messages[0].content;
@@ -43,7 +44,7 @@ function chatFor({ screenDown = false, claimsDown = false, isComparison = () => 
     }
     if (sys.startsWith('You improve one page')) {
       calls.strengthen++;
-      return { ok: true, answer: JSON.stringify({ sections: [{ heading: 'Can you plan the week without making an account?', paragraphs: [`Example Planner needs no account. ${'You open it and start the week with one short list of the outcomes that matter most to you. '.repeat(6)}`] }], faq: [{ q: 'Do I need an account to start planning?', a: 'No. Example Planner needs no account, so you open it and write the first list of the week straight away, with nothing to sign up for before you start. You can keep the same short list all week and change it on Sunday night when the next week begins.' }] }) };
+      return { ok: true, answer: JSON.stringify({ sections: [{ heading: 'Can you plan the week without making an account?', paragraphs: [`Example Planner needs no account.${strengthenOffline ? ' Example Planner works offline too.' : ''} ${'You open it and start the week with one short list of the outcomes that matter most to you. '.repeat(6)}`] }], faq: [{ q: 'Do I need an account to start planning?', a: 'No. Example Planner needs no account, so you open it and write the first list of the week straight away, with nothing to sign up for before you start. You can keep the same short list all week and change it on Sunday night when the next week begins.' }] }) };
     }
     const r = await draft(args);
     const d = JSON.parse(r.answer);
@@ -216,4 +217,27 @@ test('the week report seeds block counts every configured seed exactly once, and
   assert.match(r.report.seeds, /^not read: this site has no seeds/);
   assert.match(r.census, / seeds=none /);
   assert.deepEqual(checkReport({ ...r.report, seeds: { configured: 2, built: [], strengthened: [], answered_by: [], refused: [], queued: [{ query: 'x', reason: 'y' }] } }).filter((p) => /seeds/.test(p)).length, 1);
+});
+
+test('a strengthen for a seed that claims a missing feature is refused by the product check; the page is left as it was', async () => {
+  const root = site({ cfg: { product: PRODUCT } });
+  await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch({ gscRows: NORMAL }), chat: chatFor() });
+  const target = ledger(root, 'pages.json').pages[0];
+  const before = fs.readFileSync(path.join(root, target.rel), 'utf8');
+  const cfgPath = path.join(root, 'search-loop.config.json');
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  cfg.seeds = [target.query];
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+  await run({ root, now: new Date(NOW.getTime() + 8 * 86400e3), 'global-mode': 'normal', fetchImpl: fakeFetch({ gscRows: NORMAL }), chat: chatFor({ strengthenOffline: true }) });
+  const s = Object.values(ledger(root, 'seeds.json').seeds)[0];
+  assert.equal(s.status, 'strengthen', JSON.stringify(s));
+  assert.match(s.reason, /strengthen try 1 of 3 failed: failed the gate, left as it was: product claim: "Example Planner works offline too\."/);
+  assert.equal(fs.readFileSync(path.join(root, target.rel), 'utf8'), before, 'the page is unchanged');
+});
+
+test('a seed already built, strengthened or answered is never changed again', () => {
+  const book = { seeds: { k: { query: 'q', status: 'built', url: 'https://example.com/questions/q/' } } };
+  assert.equal(setSeed(book, 'k', { status: 'queued', reason: 'again' }), false);
+  assert.equal(book.seeds.k.status, 'built');
+  assert.equal(setSeed(book, 'n', { query: 'n', status: 'queued', reason: 'x' }), true);
 });
