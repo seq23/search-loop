@@ -25,7 +25,8 @@ export function site({ cfg = {} } = {}) {
 }
 
 // One fake internet: Google token + Search Console + autocomplete + sources + live pages + IndexNow.
-export function fakeFetch({ gscRows = [], pageRows = [], dateRows = [], inspectIndexed = true, live = true, calls = [] } = {}) {
+// cmpRows: what the comparison pull (a query includingRegex filter, v1.16.0) returns; cmpStatus: its HTTP status.
+export function fakeFetch({ gscRows = [], pageRows = [], dateRows = [], cmpRows = [], cmpStatus = 200, inspectIndexed = true, live = true, calls = [], bodies = [] } = {}) {
   return async (url, init = {}) => {
     const u = String(url);
     calls.push(u);
@@ -33,6 +34,8 @@ export function fakeFetch({ gscRows = [], pageRows = [], dateRows = [], inspectI
     if (u.startsWith('https://oauth2.googleapis.com/token')) return json(200, { access_token: 'tok', expires_in: 3600 });
     if (u.includes('/searchAnalytics/query')) {
       const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (body.dimensionFilterGroups?.[0]?.filters?.[0]?.operator === 'includingRegex') return cmpStatus === 200 ? json(200, { rows: cmpRows }) : json(cmpStatus, { error: { message: 'backend error' } });
       return json(200, { rows: body.dimensions[0] === 'date' ? dateRows : body.dimensions[0] === 'page' ? pageRows : body.dimensions.length === 1 ? [{ keys: ['plan week founder'], clicks: 0, impressions: 5, position: 14 }] : gscRows });
     }
     if (u.includes('urlInspection')) return json(200, { inspectionResult: { indexStatusResult: { verdict: inspectIndexed ? 'PASS' : 'NEUTRAL', coverageState: 'x' } } });

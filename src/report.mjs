@@ -70,9 +70,17 @@ export function buildReport(cfg, { mode, effectivePace, notes = [], stopped = fa
     lanes: lanesBlock(cfg, L, pages),
     // v1.14.0 (additive): what the loop did about the AI answers that left this site out.
     ai_misses: aiMissesBlock(L, { now, run: ai }),
+    // v1.16.0 (additive): this week's Search Console comparison searches and which were queued first.
+    comparison: comparisonBlock(L),
     run_url: process.env.GITHUB_RUN_ID ? `${process.env.GITHUB_SERVER_URL || 'https://github.com'}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : null,
   };
   return r;
+}
+
+export function comparisonBlock(L) {
+  const rec = L.read('receipt', null);
+  if (!rec) return 'not read: FIND has not run on this site';
+  return rec.comparison || 'not read: FIND has not run since v1.16.0';
 }
 
 export function lanesBlock(cfg, L, pages) {
@@ -99,6 +107,10 @@ export function checkReport(r) {
     }
   }
   if (r && 'ai_misses' in r) p.push(...checkAiMissesBlock(r.ai_misses));
+  if (r && 'comparison' in r) {
+    const c = r.comparison;
+    if (typeof c === 'string' ? !c.startsWith('not read: ') : !(c && typeof c.pulled === 'string' && Number.isInteger(c.candidates) && (Number.isInteger(c.confirmed) || String(c.confirmed).startsWith('not read: ')) && Array.isArray(c.queued))) p.push('comparison must be "not read: <reason>" or {pulled, candidates, confirmed (a number or "not read: <reason>"), queued: [...]}');
+  }
   if (r?.state === 'off' && !(r.notes || []).some((n) => n.includes(OFF_SENTENCE))) p.push(`an off report must say "${OFF_SENTENCE}"`);
   return p;
 }

@@ -2,7 +2,7 @@
 // model calls, never SERP scraping. Since v1.6.0 every target is in one of two
 // lanes (compete.mjs): can_be_one (competition score) or striking (scoreCandidate). A signal we could not read is written as
 // "not read: <reason>", never invented.
-import { searchAnalytics, dateDaysAgo } from './gsc.mjs';
+import { searchAnalytics, dateDaysAgo, comparisonFilter } from './gsc.mjs';
 import { norm, contentWords, tokenOverlap, fetchText, sleep, isoWeek, pastSoft, progress } from './util.mjs';
 import { ledger } from './ledger.mjs';
 import { buildIndex } from './site-index.mjs';
@@ -93,21 +93,27 @@ export function relevant(q, cfg) {
 // One free-model pass over the best candidates: does this search belong to
 // this site's audience? $0 route only; if it cannot answer, the lexical floor
 // stands and the receipt says the screen was not read.
+// v1.16.0: the same pass also says which kept queries are comparisons (the person is choosing
+// between options), so a Search Console comparison row gets priority only when a model read it so.
 export async function relevanceScreen(cfg, list, { chat, fetchImpl }) {
   const keep = new Set();
+  const comparison = new Set();
+  let comparisonRead = true;
   for (let i = 0; i < list.length; i += 50) {
     const batch = list.slice(i, i + 50);
     progress('find', `free-model screen ${i + 1}-${i + batch.length} of ${list.length}`);
     const r = await chat({ cfg, fetchImpl, maxTokens: 800, messages: [
       { role: 'system', content: 'You screen search queries for one website. Return ONLY JSON.' },
-      { role: 'user', content: `Site: ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Topics: ${cfg.topics.join(', ')}.\nKeep a query only if a person in this audience would type it AND a page from this site would be a genuinely useful answer (not a different meaning of the words, not a brand, product or navigation search for someone else).\nQueries:\n${batch.map((c, j) => `${j}. ${c.query}`).join('\n')}\nReturn {"keep":[numbers]}` },
+      { role: 'user', content: `Site: ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Topics: ${cfg.topics.join(', ')}.\nKeep a query only if a person in this audience would type it AND a page from this site would be a genuinely useful answer (not a different meaning of the words, not a brand, product or navigation search for someone else; a person comparing other products or looking for an alternative to one is this site's audience when the site offers such an option, so keep that search).\nSeparately, for EVERY query (kept or not), say whether it is a comparison: the person is choosing between options ("x vs y", "x or y", "alternatives to x", "x instead of y", "better than x", "switching from x"). A query that only contains such a word with another meaning (a therapy or a part called "replacement") is not a comparison.\nQueries:\n${batch.map((c, j) => `${j}. ${c.query}`).join('\n')}\nReturn {"keep":[numbers],"comparison":[numbers]}` },
     ] });
     if (!r.ok) return { notRead: r.reason };
     const j = parseJsonAnswer(r.answer);
     if (!Array.isArray(j?.keep)) return { notRead: 'the free model did not return {"keep":[...]}' };
     for (const n of j.keep) if (batch[n]) keep.add(batch[n]);
+    if (!Array.isArray(j.comparison)) comparisonRead = false;
+    else for (const n of j.comparison) if (batch[n]) comparison.add(batch[n]);
   }
-  return { keep };
+  return { keep, comparison, ...(comparisonRead ? {} : { comparisonNotRead: 'the free model did not return "comparison":[...]' }) };
 }
 
 function suggester(name, urlFor, receipt, fetchImpl, budget) {
@@ -177,6 +183,8 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
     if (cur.query !== n && !cur.variants.includes(n)) cur.variants.push(n);
     // the variant with the stronger measured signal names the page
     if (sig.gsc_position && !cur.signals.gsc_position) cur.query = n;
+    // v1.16.0: a search only the comparison pull found needs the free-model screen to keep it.
+    if (sig.comparison_pull) { if (!cands.has(k)) cur.signals.comparison_only = true; } else delete cur.signals.comparison_only;
     Object.assign(cur.signals, sig);
     cur.priority ||= priorityTopic(n, cfg) || undefined;
     cands.set(k, cur);
@@ -210,6 +218,30 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
       }
     }
   } else receipt.sources.search_console = `not read: ${sa.reason}`;
+
+  // 1b. Comparison searches (v1.16.0, her tip 27 Nov 2026): one more Search Console pull that
+  //     Search Console itself filters to "x vs y / alternatives to / instead of / better than /
+  //     switch from" searches (gsc.mjs COMPARISON_REGEX). Any position from gsc_position_min down:
+  //     a person choosing between options is the buyer. The free-model screen below confirms each
+  //     row is a comparison before it is built first. A row the normal pull also has is one
+  //     candidate (same intent key). This pull failing leaves every other pick as it was.
+  progress('find', 'Search Console comparison searches');
+  const cmp = await searchAnalytics(gscSite, { startDate: dateDaysAgo(31, now), endDate: dateDaysAgo(3, now), dimensions: ['query', 'page'], dimensionFilterGroups: comparisonFilter(), rowLimit: 1000 }, { fetchImpl });
+  const gscHost = (receipt.hosts['searchconsole.googleapis.com'] ||= { calls: 0, ok: 0, failed: 0, cost_usd: 0 });
+  gscHost.calls++;
+  if (cmp.ok) {
+    gscHost.ok++;
+    let tooHigh = 0;
+    for (const r of cmp.rows) {
+      const [query, page] = r.keys;
+      if (r.position < cfg.find.gsc_position_min) { tooHigh++; continue; }
+      add(query, { comparison_pull: true, comparison_position: Math.round(r.position * 10) / 10, comparison_impressions: r.impressions, comparison_page: page });
+    }
+    receipt.sources.comparison_pull = `ok: ${cmp.rows.length} row(s)${tooHigh ? ` (${tooHigh} already above position ${cfg.find.gsc_position_min}, left alone)` : ''}`;
+  } else {
+    gscHost.failed++;
+    receipt.sources.comparison_pull = `not read: comparison pull: couldn't read Search Console (${cmp.reason}); the normal pick is unchanged`;
+  }
 
   // 2. Bing Webmaster keyword data, only if a key exists.
   if (process.env.BING_WEBMASTER_API_KEY) {
@@ -285,12 +317,19 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
   // the screen sees the best of both lanes
   const byOne = [...targets].sort((a, b) => b.scores.can_be_one - a.scores.can_be_one);
   targets.sort((a, b) => b.score - a.score);
-  const pool = [...new Set([...targets.filter((t) => t.ai_miss_ids).slice(0, 50), ...targets.filter((t) => t.priority).slice(0, 75), ...byOne.slice(0, 75).filter((t) => t.scores.can_be_one > 0), ...targets])].slice(0, 150);
+  const pool = [...new Set([...targets.filter((t) => t.ai_miss_ids).slice(0, 50), ...targets.filter((t) => t.signals.comparison_pull).slice(0, 50), ...targets.filter((t) => t.priority).slice(0, 75), ...byOne.slice(0, 75).filter((t) => t.scores.can_be_one > 0), ...targets])].slice(0, 150);
   const screen = pool.length ? await relevanceScreen(cfg, pool, { chat, fetchImpl }) : { keep: new Set() };
   let screened = targets;
-  if (screen.notRead) receipt.sources.relevance_screen = `not read: ${screen.notRead} (lexical floor only)`;
-  else {
-    screened = pool.filter((t) => screen.keep.has(t) || t.signals.gsc_position);
+  const cmpRows = targets.filter((t) => t.signals.comparison_pull);
+  if (screen.notRead) {
+    receipt.sources.relevance_screen = `not read: ${screen.notRead} (lexical floor only)`;
+    // A search only the comparison pull found was never measured in the normal window and never
+    // asked of autocomplete: with no model to read it, it is not built this run.
+    screened = targets.filter((t) => !t.signals.comparison_only);
+  } else {
+    // Measured rows stand without the keep vote, as before; a comparison-pull row is measured too
+    // (Search Console shows the site for it), so the model's comparison read is its vote (v1.16.0).
+    screened = pool.filter((t) => screen.keep.has(t) || t.signals.gsc_position || (t.signals.comparison_pull && screen.comparison?.has(t)));
     receipt.sources.relevance_screen = `ok: kept ${screened.length} of ${pool.length} (free model)`;
   }
   // 5. Optional top-10 read for the best can-be-#1 candidates (off without a key),
@@ -308,17 +347,28 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
       t.reasons = [t.signals.gsc_position ? `already ranks ${t.signals.gsc_position} in Search Console (${t.signals.gsc_impressions} impressions)` : 'autocomplete demand (google/bing)', ...(one.score >= minOne ? [`can-be-#1 score ${one.score} too (taken by the striking lane's turn)`] : one.reasons.length ? [`can-be-#1 evidence too thin (${one.score} < ${minOne})`] : [])];
     }
     if (t.priority) t.reasons = [`priority topic "${t.priority}" (find.priority_topics): built before other searches`, ...t.reasons];
+    if (t.signals.comparison_pull && screen.comparison?.has(t)) t.comparison = true;
+    if (t.comparison) t.reasons = [`comparison search: Search Console shows people choosing between options here (position ${t.signals.comparison_position}, ${t.signals.comparison_impressions} impressions); built after AI answer misses, before other searches`, ...t.reasons];
     if (t.ai_miss_ids) t.reasons = ['AI answer miss: ChatGPT, Gemini or AI Overviews answer this without the site and no page fits; built first', ...t.reasons];
     if (!t.signals.top10) t.signals.top10 = receipt.sources.top10?.startsWith('not read') ? receipt.sources.top10 : 'not read: outside this run\'s top-10 budget';
   }
   strengthen.sort((a, b) => b.score - a.score);
   // Priority searches lead the list (and survive the max_targets cut); BUILD takes them first.
   // AI answer misses first, then priority searches.
-  screened = [...screened.filter((t) => t.ai_miss_ids), ...screened.filter((t) => !t.ai_miss_ids && t.priority), ...screened.filter((t) => !t.ai_miss_ids && !t.priority)];
+  // v1.16.0: comparison searches the model confirmed come next, before priority topics.
+  const tier = (t) => (t.ai_miss_ids ? 0 : t.comparison ? 1 : t.priority ? 2 : 3);
+  screened = [0, 1, 2, 3].flatMap((n) => screened.filter((t) => tier(t) === n));
   const nPri = receipt.seeds.priority_topics;
   receipt.seeds.priority_targets = screened.filter((t) => t.priority).length;
   if (nPri && !receipt.seeds.priority_targets) receipt.notes.push(`NAMED NOTE [FIND_PRIORITY_EMPTY] the site's ${nPri} priority topic(s) produced no new search this week (${[...cands.values()].filter((c) => c.priority).length} candidate(s) before the site-coverage check and the relevance screen); the other topics still build`);
   if (!receipt.notes.length) delete receipt.notes;
+  // What the comparison pull gave this week (the week report's `comparison` block).
+  receipt.comparison = {
+    pulled: receipt.sources.comparison_pull,
+    candidates: cmpRows.length,
+    confirmed: screen.notRead ? `not read: free-model screen (${screen.notRead}); no comparison priority this run` : screen.comparisonNotRead ? `not read: ${screen.comparisonNotRead}; no comparison priority this run` : screened.filter((t) => t.comparison).length,
+    queued: screened.slice(0, cfg.find.max_targets).filter((t) => t.comparison).map((t) => t.query).slice(0, 20),
+  };
   receipt.lanes = { ratio: laneRatio(cfg), can_be_one: screened.filter((t) => t.lane === 'can_be_one').length, striking: screened.filter((t) => t.lane === 'striking').length, weights };
   receipt.counts = { candidates: cands.size, targets: screened.length, strengthen_candidates: strengthen.length, dropped_shared_audience: droppedShared };
   const out = { schema: 'search-loop-targets-v1', site: cfg.site, week: receipt.week, generated_at: receipt.generated_at, sources: receipt.sources, targets: screened.slice(0, cfg.find.max_targets), strengthen: strengthen.slice(0, 50) };
