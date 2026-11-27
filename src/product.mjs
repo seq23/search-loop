@@ -51,8 +51,13 @@ export async function productClaims(cfg, draft, { chat, fetchImpl }) {
   if (!r.ok) return { ok: false, notRead: `product-claim check: no free model answered (${r.reason})` };
   const j = parseJsonAnswer(r.answer);
   if (!Array.isArray(j?.claims) || j.claims.some((c) => typeof c?.sentence !== 'string' || typeof c?.supported !== 'boolean')) return { ok: false, notRead: 'product-claim check: the free model did not return {"claims":[{sentence, supported}]}' };
-  // A page that names the product always says something about it; an empty list there is a model that did not read.
-  if (!j.claims.length && namesProduct(cfg, text)) return { ok: false, notRead: `product-claim check: the model listed no claim, but the page names ${name}` };
-  const bad = j.claims.filter((c) => !c.supported);
+  // Only a sentence that is really on the page counts (v1.17.1): on the real free models a "good"
+  // page came back with invented sentences built from the "does NOT" list, marked unsupported.
+  const flat = (x) => String(x).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const page = flat(text);
+  const onPage = j.claims.filter((c) => flat(c.sentence) && page.includes(flat(c.sentence)));
+  // A page that names the product always says something about it; no sentence from the page there is a model that did not read.
+  if (!onPage.length && namesProduct(cfg, text)) return { ok: false, notRead: `product-claim check: the model listed no sentence from the page, but the page names ${name}` };
+  const bad = onPage.filter((c) => !c.supported);
   return { ok: true, problems: bad.slice(0, 4).map((c) => `product claim: "${c.sentence.slice(0, 160)}" is not in the site's product facts (${String(c.why || 'unsupported').slice(0, 120)}); say only what product.facts says about ${name}`) };
 }

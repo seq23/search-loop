@@ -168,10 +168,11 @@ test('productClaims: a model that lists no claim on a page naming the product is
   const d = { h1: 'Planning apps', direct_answer: 'Example Planner needs no account.', sections: [], faq: [], facts: [] };
   const empty = await productClaims(cfg, d, { chat: async () => ({ ok: true, answer: '{"claims":[]}' }) });
   assert.equal(empty.ok, false);
-  assert.match(empty.notRead, /listed no claim, but the page names Example Planner/);
+  assert.match(empty.notRead, /listed no sentence from the page, but the page names Example Planner/);
   const junk = await productClaims(cfg, d, { chat: async () => ({ ok: true, answer: 'sure, looks fine' }) });
   assert.equal(junk.ok, false);
-  const bad = await productClaims(cfg, d, { chat: async () => ({ ok: true, answer: '{"claims":[{"sentence":"Example Planner syncs to iCloud.","supported":false,"why":"not a fact"}]}' }) });
+  const d2 = { ...d, direct_answer: 'Example Planner needs no account. Example Planner syncs to iCloud.' };
+  const bad = await productClaims(cfg, d2, { chat: async () => ({ ok: true, answer: '{"claims":[{"sentence":"Example Planner syncs to iCloud.","supported":false,"why":"not a fact"}]}' }) });
   assert.equal(bad.ok, true);
   assert.equal(bad.problems.length, 1);
 });
@@ -249,4 +250,15 @@ test('product.name: the writer and the claim check use the product\'s own name w
   const r = await productClaims(cfg, { h1: 'x', direct_answer: 'Planner Pro needs no account.', sections: [], faq: [], facts: [] }, { chat: async ({ messages }) => { asked = messages[1].content; return { ok: true, answer: '{"claims":[]}' }; } });
   assert.match(asked, /^Product: Planner Pro\./);
   assert.equal(r.ok, false, 'a page naming the product by its own name with no claim listed is not read');
+});
+
+test('productClaims: a sentence the model invents (not on the page) never stops a page; with only invented ones it is not read', async () => {
+  const cfg = { ...fixtureConfig('/tmp/x'), product: PRODUCT };
+  const d = { h1: 'Planning apps', direct_answer: 'Example Planner needs no account.', sections: [], faq: [], facts: [] };
+  const mixed = await productClaims(cfg, d, { chat: async () => ({ ok: true, answer: JSON.stringify({ claims: [{ sentence: 'Example Planner needs no account.', supported: true }, { sentence: 'Example Planner works offline.', supported: false, why: 'the lacks list' }] }) }) });
+  assert.equal(mixed.ok, true);
+  assert.deepEqual(mixed.problems, [], 'an invented sentence is not a problem on this page');
+  const invented = await productClaims(cfg, d, { chat: async () => ({ ok: true, answer: JSON.stringify({ claims: [{ sentence: 'Example Planner works offline.', supported: false }] }) }) });
+  assert.equal(invented.ok, false);
+  assert.match(invented.notRead, /listed no sentence from the page/);
 });
