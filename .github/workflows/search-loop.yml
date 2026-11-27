@@ -25,7 +25,7 @@ on:
         type: string
         default: ""
       post_build_command:
-        description: Optional site build that folds new pages into sitemaps/heads; runs only when pages changed
+        description: Optional site finishing step (header, styles, sitemaps); runs after any run that wrote, rewrote or removed a site file
         type: string
         default: ""
       commit_command:
@@ -173,11 +173,32 @@ jobs:
           echo "### search-loop" >> "$GITHUB_STEP_SUMMARY"
           grep -E '^(search-loop |note: |NAMED )' .search-loop-run.log >> "$GITHUB_STEP_SUMMARY" || true
           exit 0
-      - name: Site build for new pages
-        if: inputs.post_build_command != '' && steps.engine.outputs.published != '0' && steps.engine.outputs.published != ''
-        run: ${{ inputs.post_build_command }}
+      # The site's finishing step (header, styles, sitemap) runs after ANY run that wrote, rewrote
+      # or removed a site file (pages_written > 0; "unknown", or missing from an engine older than
+      # v1.17.2, also runs it), not only after a new page. mode is empty only when the engine wrote
+      # no outputs at all (crashed or hung), and then nothing is committed either. Before this it ran
+      # only after a new page: porchandparty901.com shipped 3 strengthened pages with no header or
+      # styles when it ran on new pages only (27 Nov 2026). If it fails, nothing is committed and the
+      # run is red with NAMED STOP [POST_BUILD_FAILED] (also an Open Loops row).
+      - name: Site finishing step for pages this run wrote or rewrote
+        id: post_build
+        if: inputs.post_build_command != '' && steps.engine.outputs.mode != '' && steps.engine.outputs.pages_written != '0'
+        env:
+          POST_BUILD_COMMAND: ${{ inputs.post_build_command }}
+          PAGES_WRITTEN: ${{ steps.engine.outputs.pages_written }}
+        run: |
+          echo "search-loop: site finishing step for pages_written=$PAGES_WRITTEN: $POST_BUILD_COMMAND"
+          set +e
+          bash -eo pipefail -c "$POST_BUILD_COMMAND"
+          code=$?
+          if [ "$code" -ne 0 ]; then
+            line="NAMED STOP [POST_BUILD_FAILED] the site's finishing step (post_build_command) exited $code after this run wrote $PAGES_WRITTEN site file(s); nothing from this run is committed, so no page goes live without the site's header and styles. The next run retries."
+            echo "$line" | tee -a .search-loop-run.log >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$line"
+            exit 1
+          fi
       - name: Commit and push (default branch only)
-        if: env.PUBLISH == 'true' && steps.engine.outputs.exit_code != '1' && steps.engine.outputs.exit_code != '9'
+        if: env.PUBLISH == 'true' && steps.post_build.outcome != 'failure' && steps.engine.outputs.exit_code != '1' && steps.engine.outputs.exit_code != '9'
         env:
           COMMIT_MESSAGE: ${{ inputs.commit_message }}
           COMMIT_COMMAND: ${{ inputs.commit_command }}

@@ -20,6 +20,7 @@ import { selfTest } from '../src/self-test.mjs';
 import { draftSlot } from '../src/slot.mjs';
 import { resetLanes, noFreeModelStreak, loadRouting } from '../src/llm.mjs';
 import crypto from 'node:crypto';
+import { treeSnapshot, pagesWritten } from '../src/written.mjs';
 
 function args(argv) {
   const o = { _: [] };
@@ -38,6 +39,8 @@ export async function run(opts) {
   if (problems.length) throw new NamedStop('CONFIG_INVALID', `${opts.config || 'search-loop.config.json'}: ${problems.join('; ')}`, EXIT.PROBLEMS);
   const now = opts.now || new Date();
   const notes = [];
+  // Before anything is written: what the site looks like, to tell afterwards which files this run changed.
+  const snapBefore = treeSnapshot(root);
   resetLanes();
   // Stagger: every site shares the same free lanes, so a scheduled run waits a
   // fixed, site-specific 0-39 minutes before it starts (runner minutes are free on
@@ -139,6 +142,11 @@ export async function run(opts) {
       notes.push(`NAMED NOTE [NO_FREE_MODEL] every free model lane is out; 0 of ${did.build.quota} page(s) published, the searches stay queued for the next run (run ${streak.runs} in a row since ${streak.since}) — ${did.build.lanes_out}`);
     }
   }
+  // Site files this run wrote, rewrote or removed: the caller runs the site's finishing step
+  // when this is above 0 or could not be read (pages_written in --github-output).
+  const out = path.resolve(root, opts['report-out'] || path.join(cfg.ledger_dir, 'search-loop-week.json'));
+  const written = pagesWritten(snapBefore, treeSnapshot(root), [path.resolve(root, cfg.ledger_dir), out, path.join(root, '.search-loop-run.log'), path.join(root, '.search-loop-engine')]);
+  if (written.count === null) notes.push(`NAMED NOTE [PAGES_WRITTEN_UNREAD] could not tell which site files this run changed (${written.reason}); the site's finishing step runs anyway`);
   progress('report', 'writing');
   const rules = rulesFor(mode);
   const effectivePace = perDayLimit(cfg, rules);
@@ -146,10 +154,15 @@ export async function run(opts) {
   const report = buildReport(cfg, { mode, effectivePace, notes, stopped: Boolean(did.build?.stopped), now, check: did.check || {}, ai });
   const rp = checkReport(report);
   if (rp.length) throw new NamedStop('REPORT_SHAPE', rp.join('; '), EXIT.PROBLEMS);
-  const out = path.resolve(root, opts['report-out'] || path.join(cfg.ledger_dir, 'search-loop-week.json'));
   writeJson(out, report);
-  const census = `search-loop ${cfg.site}: mode=${mode} find=${did.find ? `${did.find.targets} targets${did.find.priority ? ` (${did.find.priority} priority)` : ''}` : 'skipped'} published=${did.build?.published ?? 0}/${did.build?.quota ?? 0} held_by_cap=${did.build?.held ?? 0} redirected=${did.build?.redirected ?? 0} dropped=${did.build?.dropped ?? 0} related_links=${did.build?.related_links ?? 0} checked=${did.check?.checked ?? 0} measured=${did.check?.measured ?? 0} wins=${did.check?.wins ?? 0} strengthened=${did.check?.strengthened ?? 0} undone=${did.check?.undone ?? 0} merged=${did.check?.merged ?? 0} refreshed=${did.check?.refresh?.refreshed ?? 0}/${did.check?.refresh?.due ?? 0} indexnow=${did.check?.indexnow ?? 0} seeds=${typeof report.seeds === 'string' ? 'none' : `${report.seeds.configured}/built:${report.seeds.built.length}/strengthened:${report.seeds.strengthened.length}/answered:${report.seeds.answered_by.length}/refused:${report.seeds.refused.length}/queued:${report.seeds.queued.length}`} ai_misses=${!ai ? 'skipped' : ai.ok ? `${ai.misses.length}/strengthened:${report.ai_misses.strengthened.length}/new:${report.ai_misses.new_candidates.length}/skipped:${report.ai_misses.skipped.length}/rejected:${report.ai_misses.rejected.length}` : 'could_not_tell'} report=${path.relative(root, out)}`;
-  return { report, census, nothing, mode, did, out, root, cfg };
+  const census = `search-loop ${cfg.site}: mode=${mode} find=${did.find ? `${did.find.targets} targets${did.find.priority ? ` (${did.find.priority} priority)` : ''}` : 'skipped'} published=${did.build?.published ?? 0}/${did.build?.quota ?? 0} held_by_cap=${did.build?.held ?? 0} redirected=${did.build?.redirected ?? 0} dropped=${did.build?.dropped ?? 0} related_links=${did.build?.related_links ?? 0} checked=${did.check?.checked ?? 0} measured=${did.check?.measured ?? 0} wins=${did.check?.wins ?? 0} strengthened=${did.check?.strengthened ?? 0} undone=${did.check?.undone ?? 0} merged=${did.check?.merged ?? 0} refreshed=${did.check?.refresh?.refreshed ?? 0}/${did.check?.refresh?.due ?? 0} indexnow=${did.check?.indexnow ?? 0} seeds=${typeof report.seeds === 'string' ? 'none' : `${report.seeds.configured}/built:${report.seeds.built.length}/strengthened:${report.seeds.strengthened.length}/answered:${report.seeds.answered_by.length}/refused:${report.seeds.refused.length}/queued:${report.seeds.queued.length}`} pages_written=${written.count ?? 'unknown'} ai_misses=${!ai ? 'skipped' : ai.ok ? `${ai.misses.length}/strengthened:${report.ai_misses.strengthened.length}/new:${report.ai_misses.new_candidates.length}/skipped:${report.ai_misses.skipped.length}/rejected:${report.ai_misses.rejected.length}` : 'could_not_tell'} report=${path.relative(root, out)}`;
+  return { report, census, nothing, mode, did, out, root, cfg, written };
+}
+
+// The step outputs the caller workflow reads. pages_written (v1.17.2) gates the site's finishing
+// step: "unknown" when the run could not tell, which runs it (never a silent skip).
+export function githubOutputs(r) {
+  return { report: r.out, mode: r.mode, published: r.did.build?.published ?? 0, pages_written: r.written.count ?? 'unknown', pages_dir: path.resolve(r.root, r.cfg.output.dir), ledger_dir: path.resolve(r.root, r.cfg.ledger_dir) };
 }
 
 async function main() {
@@ -189,7 +202,7 @@ async function main() {
   }, hardMin * 60000).unref() });
   for (const n of r.report.notes) console.log(`note: ${n}`);
   console.log(r.census);
-  if (o['github-output'] && process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `report=${r.out}\nmode=${r.mode}\npublished=${r.did.build?.published ?? 0}\npages_dir=${path.resolve(r.root, r.cfg.output.dir)}\nledger_dir=${path.resolve(r.root, r.cfg.ledger_dir)}\n`);
+  if (o['github-output'] && process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(githubOutputs(r)).map(([k, v]) => `${k}=${v}\n`).join(''));
   if (r.nothing && r.mode !== 'off') throw new NamedStop('NOTHING_DONE', 'no search was found, no page built and no page checked this run; the report above says which source was not read', EXIT.NOTHING);
   const keyStop = r.report.notes.find((n) => /NAMED STOP \[FREE_MODEL_KEY_(MISSING|REFUSED)\]/.test(n));
   if (keyStop && !r.did.check?.checked && !r.did.find) throw new NamedStop('FREE_MODEL_KEY', keyStop, EXIT.CREDENTIAL);

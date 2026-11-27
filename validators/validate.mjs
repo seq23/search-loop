@@ -56,8 +56,19 @@ export function check(s) {
   if (!/repository:\s*seq23\/search-loop/.test(w)) p.push('search-loop.yml must check out the engine from seq23/search-loop');
   if (/confirm_paid|ANTHROPIC_API_KEY|OPENAI_API_KEY/.test(w)) p.push('search-loop.yml references a paid lane or key');
   // v1.14.0: the engine step reads AI answer misses with the Open Loops token (that step only).
-  const runStep = w.slice(w.indexOf('- name: Run the search loop'), w.indexOf('- name: Site build for new pages'));
+  const runStep = w.slice(w.indexOf('- name: Run the search loop'), w.indexOf('- name: Site finishing step'));
   if (!/BOSS_OPEN_LOOPS_TOKEN:\s*\$\{\{\s*secrets\.BOSS_OPEN_LOOPS_TOKEN\s*\}\}/.test(runStep)) p.push('the "Run the search loop" step does not pass BOSS_OPEN_LOOPS_TOKEN (AI answer misses would never be read)');
+  // v1.17.2: the site's finishing step runs after any run that wrote or rewrote a site file (the
+  // engine's pages_written), never only after a new page (p-n-p, 27 Nov 2026: 3 strengthened pages
+  // went live with no header or styles); if it fails, nothing is committed and the run says so.
+  const post = w.slice(w.indexOf('- name: Site finishing step'), w.indexOf('- name: Commit and push'));
+  const postIf = (/^\s+if:\s*(.*)$/m.exec(post) || [])[1] || '';
+  if (!post || !/steps\.engine\.outputs\.pages_written != '0'/.test(postIf)) p.push(`the site finishing step must run when steps.engine.outputs.pages_written != '0' (any page written or rewritten), saw if: ${postIf || 'none'}`);
+  if (/outputs\.published/.test(postIf)) p.push('the site finishing step is still gated on new pages published (outputs.published); a rewrite-only run would skip it');
+  if (!/NAMED STOP \[POST_BUILD_FAILED\][\s\S]*tee -a \.search-loop-run\.log/.test(post)) p.push('a failed site finishing step must print NAMED STOP [POST_BUILD_FAILED] into .search-loop-run.log (the Open Loops reader)');
+  if (!/^\s+id:\s*post_build\s*$/m.test(post)) p.push('the site finishing step needs id: post_build (the commit step reads its outcome)');
+  const commitIf = (/- name: Commit and push[^\n]*\n\s+if:\s*(.*)$/m.exec(w) || [])[1] || '';
+  if (!commitIf.includes("steps.post_build.outcome != 'failure'")) p.push('the commit step must not run after a failed site finishing step (pages would go live without the site header and styles)');
   // 3. The global switch.
   examined++;
   if (!/vars\.SEARCH_LOOP_MODE/.test(s.modeSync)) p.push('mode-sync.yml does not read vars.SEARCH_LOOP_MODE');
@@ -129,6 +140,9 @@ function selfTest() {
     ['no validate stage', mut('reusable', "if: inputs.stage == 'validate'", 'if: false')],
     ['saw nothing', () => check({ ...real, files: [] })],
     ['ai_misses made required', mut('schema', '"run_url"\n  ]', '"run_url",\n    "ai_misses"\n  ]')],
+    ['finishing step only on new pages', mut('reusable', "steps.engine.outputs.mode != '' && steps.engine.outputs.pages_written != '0'", "steps.engine.outputs.published != '0' && steps.engine.outputs.published != ''")],
+    ['finishing step failure not named', mut('reusable', 'line="NAMED STOP [POST_BUILD_FAILED]', 'line="post build failed')],
+    ['commit after a failed finishing step', mut('reusable', "steps.post_build.outcome != 'failure' && ", '')],
     ['run step loses the AI misses token', mut('reusable', /(Run the search loop[\s\S]*?)BOSS_OPEN_LOOPS_TOKEN: \$\{\{ secrets\.BOSS_OPEN_LOOPS_TOKEN \}\}/, '$1X: y')],
   ];
   const missed = BROKEN.filter(([, f]) => f().problems.length === 0 || f().problems[0] === 'MUTATION DID NOT APPLY').map(([n]) => n);
