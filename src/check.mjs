@@ -334,7 +334,7 @@ async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, note
     notes.push(`strengthen of ${p.route}: the model added nothing new; the page and its dates are unchanged`);
     return { ok: false, why: 'nothing', reason: 'the model added nothing new; the page and its dates are unchanged' };
   }
-  next.facts = await verifyFacts(next.facts || [], fetchImpl);
+  next.facts = await verifyFacts(next.facts || [], fetchImpl, p.comparison ? next.rivals || [] : []);
   const before = fs.readFileSync(file, 'utf8');
   const relatedLinks = relatedLinksOf(before);
   const html = render(cfg, { slug: p.slug, draft: next, related: relatedLinks, published: p.published_at, modified: today });

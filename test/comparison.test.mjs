@@ -10,7 +10,7 @@ import path from 'node:path';
 import { run } from '../bin/search-loop.mjs';
 import { COMPARISON_REGEX } from '../src/gsc.mjs';
 import { gateReport } from '../src/gate.mjs';
-import { render } from '../src/render.mjs';
+import { render, draftDrift } from '../src/render.mjs';
 import { checkReport } from '../src/report.mjs';
 import { fixtureConfig, fixtureDraft } from '../src/fixture.mjs';
 import { site, fakeFetch, goodChat, distinctChat, NOW } from './harness.mjs';
@@ -20,7 +20,7 @@ const row = (q, position, impressions = 30, page = 'https://example.com/weekly-p
 
 // A free model that answers the relevance screen: keeps every query and calls a query a comparison
 // when the test says so (the real screen is a model reading meaning; this stands in for it).
-const screenChat = ({ isComparison = () => false, comparisonKey = true, down = false, calls = [] } = {}) => {
+const screenChat = ({ isComparison = () => false, isKept = () => true, comparisonKey = true, down = false, calls = [] } = {}) => {
   const draft = distinctChat();
   return async (args) => {
     const sys = args.messages[0].content;
@@ -28,7 +28,7 @@ const screenChat = ({ isComparison = () => false, comparisonKey = true, down = f
       calls.push(args.messages[1].content);
       if (down) return { ok: false, reason: 'HTTP 429 daily quota' };
       const lines = [...args.messages[1].content.matchAll(/^(\d+)\. (.+)$/gm)].map((m) => [Number(m[1]), m[2]]);
-      return { ok: true, answer: JSON.stringify({ keep: lines.map(([n]) => n), ...(comparisonKey ? { comparison: lines.filter(([, q]) => isComparison(q)).map(([n]) => n) } : {}) }) };
+      return { ok: true, answer: JSON.stringify({ keep: lines.filter(([, q]) => isKept(q)).map(([n]) => n), ...(comparisonKey ? { comparison: lines.filter(([, q]) => isComparison(q)).map(([n]) => n) } : {}) }) };
     }
     const r = await draft(args);
     if (/This search compares options/.test(args.messages[1].content)) {
@@ -58,9 +58,11 @@ test('the comparison pull asks Search Console for exactly the tip regex, as one 
 test('confirmed comparison searches lead the pick list and are built first; an unconfirmed regex row gets no priority', async () => {
   const root = site({ cfg: { find: { priority_topics: 1 } } });
   const cmpRows = [row(VS, 45, 12), row(ALT, 22, 8), row('weekly planning replacement pages refill', 18, 9)];
-  const chat = screenChat({ isComparison: (q) => q === VS || q === ALT });
+  // The model also calls an autocomplete-only search a comparison: only Search Console comparison rows get priority.
+  const chat = screenChat({ isComparison: (q) => q === VS || q === ALT || q === 'weekly planning template' });
   const r = await run({ root, now: NOW, 'global-mode': 'normal', fetchImpl: fakeFetch({ gscRows: NORMAL, cmpRows }), chat });
   const t = ledger(root, 'targets.json').targets;
+  assert.ok(t.some((x) => x.query === 'weekly planning template' && !x.comparison), 'autocomplete row the model called a comparison: no priority');
   const cmp = t.filter((x) => x.comparison).map((x) => x.query);
   assert.deepEqual(new Set(cmp), new Set([VS, ALT]), `comparison targets: ${cmp}`);
   // Comparisons first, before priority topics and everything else (no AI misses here).
@@ -139,6 +141,18 @@ test('dedupe: a comparison row autocomplete also finds is one ordinary target wh
   assert.equal(t[0].signals.comparison_pull, true);
 });
 
+test('a comparison-pull row stands on the model\'s comparison read like a measured row; unconfirmed and unkept, it is not queued', async () => {
+  const root = site();
+  const other = 'weekly planning compared with a team standup notes';
+  const cmpRows = [row(ALT, 44, 6), row(other, 52, 4)];
+  // The model keeps neither (it reads both as about someone else's product), confirms ALT as a comparison.
+  await run({ root, now: NOW, stage: 'find', 'global-mode': 'normal', fetchImpl: fakeFetch({ gscRows: NORMAL, cmpRows }), chat: screenChat({ isKept: (q) => q !== ALT && q !== other, isComparison: (q) => q === ALT }) });
+  const t = ledger(root, 'targets.json').targets;
+  assert.equal(t[0].query, ALT);
+  assert.equal(t[0].comparison, true);
+  assert.ok(!t.some((x) => x.query === other), 'neither kept nor a comparison nor measured in the window: not queued');
+});
+
 test('a site with 0 comparison searches: the normal pick, an honest 0, a valid report', async () => {
   const root = site();
   const r = await run({ root, now: NOW, stage: 'find', 'global-mode': 'normal', fetchImpl: fakeFetch({ gscRows: NORMAL, cmpRows: [] }), chat: screenChat() });
@@ -203,11 +217,75 @@ test('the draft prompt for a comparison asks for rivals, sources and skip; a nor
   const p = draftPrompt(cfg, { query: 'example planner vs notion', comparison: true }, [], null)[1].content;
   assert.match(p, /This search compares options/);
   assert.match(p, /"rivals": \[/);
-  assert.match(p, /\{"skip":"no source for the rival's claims"\}/);
+  assert.match(p, /an unsourced sentence about a rival stops it from being published/);
+  assert.match(p, /Something about a rival you cannot source is left out/);
   assert.match(p, /never imply Example Planner is affiliated with or endorsed by one/);
   const n = draftPrompt(cfg, { query: 'how to plan my week' }, [], null)[1].content;
   assert.doesNotMatch(n, /compares options|"rivals"/);
   const d = cleanDraft({ ...fixtureDraft(), rivals: ['Notion', ' Notion ', '', 'Todoist'] });
   assert.deepEqual(d.rivals, ['Notion', 'Todoist']);
   assert.equal('rivals' in cleanDraft(fixtureDraft()), false);
+});
+
+// --- the comparison table (ship-ready search d2: a table for any comparison) ------------------
+const TABLE = { columns: ['If you need', 'Look for', 'Where to check'], rows: [['Coaching between sessions', 'Daily check-ins you can answer in two minutes', 'The product tour'], ['A human coach', 'Named coaches and session limits', 'The plan page']] };
+const pageOf = (mut) => {
+  const cfg = fixtureConfig();
+  const d = fixtureDraft();
+  d.facts = [
+    { claim: 'Notion offers a free plan for individuals with unlimited pages and blocks.', source_url: 'https://www.notion.com/pricing', source_name: 'Notion', verified: true },
+    ...d.facts.map((f) => ({ ...f, verified: true })),
+  ];
+  d.rivals = [RIVAL];
+  d.sections[2].table = JSON.parse(JSON.stringify(TABLE));
+  mut(d);
+  const html = render(cfg, { slug: 'example-planner-vs-notion', draft: d, related: [], published: '2026-11-02' });
+  return { d, html, r: gateReport({ query: 'example planner vs notion', html, facts: d.facts, comparison: true, rivals: d.rivals }, { cfg, corpus: [], siblings: [] }) };
+};
+
+test('a comparison table renders as a real table, survives the drift check, and a ragged one is dropped', async () => {
+  const { cleanDraft } = await import('../src/build.mjs');
+  const { d, html, r } = pageOf(() => {});
+  assert.match(html, /<div class="table-scroll" style="overflow-x:auto"><table><thead><tr><th scope="col">If you need<\/th>/);
+  assert.match(html, /<tr><th scope="row">A human coach<\/th><td>Named coaches and session limits<\/td>/);
+  assert.deepEqual(r.problems.filter((x) => x.startsWith('rivals:')), []);
+  assert.ok(!r.notes.some((n) => n.startsWith('d2 a comparison page')), 'no table note when the table is there');
+  assert.deepEqual(draftDrift(html, d), [], 'table cells count as the draft\'s own words');
+  assert.ok(draftDrift(html.replace('Named coaches and session limits', 'Edited by hand'), d).length > 0, 'a hand-edited cell is drift');
+  const kept = cleanDraft({ ...fixtureDraft(), sections: [{ heading: 'How to choose', paragraphs: ['x'], table: TABLE }] });
+  assert.deepEqual(kept.sections[0].table, TABLE);
+  const ragged = cleanDraft({ ...fixtureDraft(), sections: [{ heading: 'How to choose', paragraphs: ['x'], table: { columns: ['a', 'b'], rows: [['1', '2'], ['3']] } }] });
+  assert.equal('table' in ragged.sections[0], false);
+  const { r: noTable } = pageOf((x) => { delete x.sections[2].table; });
+  assert.ok(noTable.notes.some((n) => n.startsWith('d2 a comparison page reads best with a table')));
+  assert.ok(!noTable.problems.some((n) => n.startsWith('d2')), 'a missing table is a note, never a block');
+});
+
+test('gate: a table row or column about the rival is a claim and blocks unsourced', () => {
+  const row = pageOf((d) => { d.sections[2].table.rows.push(['Notion', 'No weekly review view', 'Its help centre']); }).r.problems.filter((x) => x.startsWith('rivals:'));
+  assert.equal(row.length, 1, row.join(' | '));
+  assert.match(row[0], /the table cell "No weekly review view" states something about Notion with no source/);
+  const col = pageOf((d) => { d.sections[2].table = { columns: ['What matters', 'Notion', 'Example Planner'], rows: [['Price', 'Free for one person', 'One payment'], ['Reviews', 'Build your own', 'Built in']] }; }).r.problems.filter((x) => x.startsWith('rivals:'));
+  assert.equal(col.length, 1, col.join(' | '));
+  assert.match(col[0], /the table cell "Free for one person" states something about Notion/);
+});
+
+test('a fact about a rival counts only when its source page names that rival', async () => {
+  const { verifyFacts } = await import('../src/build.mjs');
+  const pages = { 'https://a.example/second-nature': '<html><title>Second Nature: AI sales role-play</title>' + 'x'.repeat(600) + '</html>', 'https://b.example/diet': '<html><title>A diet app</title>' + 'y'.repeat(600) + '</html>' };
+  const fetchImpl = async (u) => new Response(pages[u] || '', { status: pages[u] ? 200 : 404 });
+  const facts = [
+    { claim: 'Second Nature offers AI role-play practice for sales teams.', source_url: 'https://a.example/second-nature' },
+    { claim: 'Second Nature is a weight-loss programme.', source_url: 'https://b.example/diet' },
+    { claim: 'Coaching works best with a weekly review.', source_url: 'https://b.example/diet' },
+  ];
+  const out = await verifyFacts(facts, fetchImpl, ['Second Nature']);
+  assert.deepEqual(out.map((f) => f.verified), [true, false, true]);
+  assert.equal(out[1].unnamed, 'Second Nature');
+  // a normal page (no rivals) is checked exactly as before
+  const plain = await verifyFacts([{ claim: 'Second Nature is a weight-loss programme.', source_url: 'https://b.example/diet' }], fetchImpl);
+  assert.equal(plain[0].verified, true);
+  // the fix pass is told why
+  const { r } = pageOf((d) => { d.facts[0] = { ...d.facts[0], verified: false, checked_status: 200, unnamed: 'Notion' }; d.facts = [d.facts[0], d.facts[1]]; });
+  assert.ok(r.problems.some((p) => p.includes('the page never names Notion, so it is no source for a claim about it')), r.problems.join(' | '));
 });

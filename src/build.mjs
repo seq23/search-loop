@@ -8,7 +8,7 @@ import { ledger } from './ledger.mjs';
 import { buildIndex } from './site-index.mjs';
 import { freeChat, parseJsonAnswer } from './llm.mjs';
 import { render, pageRel, pageUrl, withRelatedLink, fitMeta } from './render.mjs';
-import { gateReport, LIMITS, GATE_VERSION } from './gate.mjs';
+import { gateReport, LIMITS, GATE_VERSION, rivalPattern } from './gate.mjs';
 import { centralDate, slugify, tokenOverlap, shingles, stripTags, sha256, fetchText, daysBetween, pastSoft, progress } from './util.mjs';
 import { intentKey as keyOf } from './find.mjs';
 import { currentCap, liveEnginePages, recordHeld, CAP_DEFAULTS } from './cap.mjs';
@@ -71,7 +71,7 @@ export function draftPrompt(cfg, target, related, problems) {
   // v1.16.0: a comparison search names other companies' products. Every claim about one is a sourced
   // fact (risk brain: claims about another company need a source), and the gate checks it by the
   // names the model lists in "rivals".
-  const versus = target.comparison ? `\nThis search compares options. Name every company, product or service the search or the page names exactly as that company spells it, and list each one in "rivals" (never ${cfg.site_name} itself; [] when the options are not companies or products, such as two methods). Anything you say about a rival (what it does, offers, costs, lacks or its terms) goes in "facts" with the URL of the rival's own page or an independent publication that states it; in the rest of the page a rival's name appears only in headings or in a sentence that repeats one of those facts word for word. Never call a rival bad, a scam or worse, never imply ${cfg.site_name} is affiliated with or endorsed by one, and say plainly who each option fits. If you cannot source what the page would need to say about a rival, return {"skip":"no source for the rival's claims"}.` : '';
+  const versus = target.comparison ? `\nThis search compares options. Name every company, product or service the search or the page names exactly as that company spells it, and list each one in "rivals" (never ${cfg.site_name} itself; [] when the options are not companies or products, such as two methods). Anything you say about a rival (what it does, offers, costs, lacks or its terms) goes in "facts" with the URL of the rival's own page or an independent publication that states it; give one section a "table" ({"columns": ["2-4 short headers"], "rows": [["one cell per column"], ...]}, 2-8 rows) that lays out how to choose: what the reader decides by and which kind of person each option fits, never what a rival offers, costs or lacks; in the rest of the page a rival's name appears only in headings or in a sentence that repeats one of those facts word for word. Never call a rival bad, a scam or worse, never imply ${cfg.site_name} is affiliated with or endorsed by one, and say plainly who each option fits. A rival's own public page (what it is, what it offers) is a fine source. Something about a rival you cannot source is left out: write instead what the reader should check and where, so the page still helps them choose. The page is checked: an unsourced sentence about a rival stops it from being published.` : '';
   return [
     { role: 'system', content: `You write one web page that answers one search for ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Voice (how to write; never copy these sentences into the page): ${cfg.voice}. You return ONLY a JSON object, no prose around it.` },
     { role: 'user', content: `Search to answer: "${target.query}"
@@ -97,12 +97,22 @@ Hard rules: no statistics, percentages or "studies show" anywhere except inside 
 // Lengths are fitted where the page is written (render.mjs); kept exported here for callers.
 export { fitMeta };
 
+// v1.16.0: a comparison page lays the options out in a table (ship-ready search d2: "a table for any
+// comparison"). Kept only when it is a real grid: 2-4 columns, 2-8 rows, every row as wide as the header.
+function tableOf(t, str) {
+  if (!t || !Array.isArray(t.columns) || !Array.isArray(t.rows)) return {};
+  const columns = t.columns.map(str);
+  const rows = t.rows.filter(Array.isArray).map((r) => r.map(str));
+  if (columns.length < 2 || columns.length > 4 || columns.some((c) => !c) || rows.length < 2 || rows.length > 8 || rows.some((r) => r.length !== columns.length || r.some((c) => !c))) return {};
+  return { table: { columns, rows } };
+}
+
 export function cleanDraft(d) {
   if (!d || typeof d !== 'object') return null;
   const str = (x) => (typeof x === 'string' ? x.trim() : '');
   const out = {
     h1: str(d.h1), title_lead: str(d.title_lead), meta_description: str(d.meta_description), direct_answer: str(d.direct_answer),
-    sections: (Array.isArray(d.sections) ? d.sections : []).map((s) => ({ heading: str(s?.heading), paragraphs: (Array.isArray(s?.paragraphs) ? s.paragraphs : []).map(str).filter(Boolean), bullets: (Array.isArray(s?.bullets) ? s.bullets : []).map(str).filter(Boolean).slice(0, 8) })).filter((s) => s.heading && s.paragraphs.length),
+    sections: (Array.isArray(d.sections) ? d.sections : []).map((s) => ({ heading: str(s?.heading), paragraphs: (Array.isArray(s?.paragraphs) ? s.paragraphs : []).map(str).filter(Boolean), bullets: (Array.isArray(s?.bullets) ? s.bullets : []).map(str).filter(Boolean).slice(0, 8), ...tableOf(s?.table, str) })).filter((s) => s.heading && s.paragraphs.length),
     faq: (Array.isArray(d.faq) ? d.faq : []).map((f) => ({ q: str(f?.q), a: str(f?.a) })).filter((f) => f.q && f.a).slice(0, 6),
     facts_heading: str(d.facts_heading),
     facts: (Array.isArray(d.facts) ? d.facts : []).map((f) => ({ claim: str(f?.claim), source_url: str(f?.source_url), source_name: str(f?.source_name) })).filter((f) => f.claim && /^https:\/\//.test(f.source_url)).slice(0, 4),
@@ -174,12 +184,18 @@ export function shapeGaps(html, query) {
   return out;
 }
 
-export async function verifyFacts(facts, fetchImpl = fetch) {
+// v1.16.0: a fact that names a rival (a comparison page's "rivals") counts only when its source page
+// names that rival too, so a fact pinned to the wrong company (a draft for "second nature
+// alternatives" cited a page about another product) is not a source for it.
+export async function verifyFacts(facts, fetchImpl = fetch, rivals = []) {
+  const named = (t, x) => rivalPattern(x).test(t);
   for (const f of facts) {
     if (f.verified !== undefined) continue;
     const r = await fetchText(f.source_url, { fetchImpl, timeoutMs: 10000, headers: { 'user-agent': 'Mozilla/5.0 (compatible; search-loop source check; +https://github.com/seq23/search-loop)' } });
     f.verified = r.status >= 200 && r.status < 400 && r.text.length > 500;
     f.checked_status = r.status;
+    const unnamed = f.verified && rivals.find((x) => named(f.claim, x) && !named(r.text, x));
+    if (unnamed) { f.verified = false; f.unnamed = unnamed; }
   }
   return facts;
 }
@@ -348,7 +364,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
       draft = cleanDraft(parsed);
       if (!draft) { problems = ['the answer was not the JSON object asked for, with every key filled']; continue; }
       draft.meta_description = fitMeta(draft.meta_description);
-      draft.facts = await verifyFacts(draft.facts, fetchImpl);
+      draft.facts = await verifyFacts(draft.facts, fetchImpl, target.comparison ? draft.rivals || [] : []);
       html = render(cfg, { slug, draft, related: related.map((p) => ({ route: p.route, anchor: p.h1 || p.title })), published: today });
       // Distinct intent gate, after drafting: the H1 the model chose, and the answer it gave.
       const post = matchIntent(cfg, draft.h1, corpus) || matchAnswer(cfg, draft.direct_answer, answers);

@@ -141,7 +141,7 @@ export function render(cfg, { slug, draft, related = [], published, modified }) 
     `<h1>${esc(draft.h1)}</h1>`,
     `<p class="direct-answer">${prose(cfg, draft.direct_answer)}</p>`,
     `<p class="page-dates">Published <time datetime="${published}">${humanDate(published)}</time>${modified && modified !== published ? ` · Updated <time datetime="${modified}">${humanDate(modified)}</time>` : ''} · ${cfg.author?.name ? `By ${cfg.author.url ? `<a href="${esc(cfg.author.url)}">${esc(cfg.author.name)}</a>` : esc(cfg.author.name)}` : esc(cfg.publisher?.name || cfg.site_name)}</p>`,
-    ...draft.sections.map((s) => `<section><h2>${esc(s.heading)}</h2>${s.paragraphs.map((x) => `<p>${prose(cfg, x)}</p>`).join('')}${(s.bullets || []).length ? `<${list}>${s.bullets.map((b) => `<li>${prose(cfg, b)}</li>`).join('')}</${list}>` : ''}</section>`),
+    ...draft.sections.map((s) => `<section><h2>${esc(s.heading)}</h2>${s.paragraphs.map((x) => `<p>${prose(cfg, x)}</p>`).join('')}${(s.bullets || []).length ? `<${list}>${s.bullets.map((b) => `<li>${prose(cfg, b)}</li>`).join('')}</${list}>` : ''}${s.table ? tableHtml(s.table) : ''}</section>`),
     ...(facts.length && draft.facts_heading ? [factsBlock(draft.facts_heading, facts)] : []),
     `<section class="faq"><h2>Frequently asked questions</h2>${draft.faq.map((f) => `<h3>${esc(f.q)}</h3><p>${prose(cfg, f.a)}</p>`).join('')}</section>`,
     // v1.13.0: a draft with no model-written heading (older drafts) keeps its sources, below the
@@ -202,6 +202,9 @@ export function relatedLinksOf(html) {
 const NAMED = { lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', rsquo: '\u2019', lsquo: '\u2018', ldquo: '\u201c', rdquo: '\u201d', mdash: '\u2014', ndash: '\u2013', middot: '\u00b7', hellip: '\u2026', amp: '&' };
 const unesc = (x) => x.replace(/&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));/gi, (m, d, h, n) => (d ? String.fromCodePoint(+d) : h ? String.fromCodePoint(parseInt(h, 16)) : NAMED[n.toLowerCase()] ?? m));
 const textOf = (h) => norm(unesc(h.replace(/<[^>]+>/g, ' ')));
+// v1.16.0: a section's comparison table (cleanDraft keeps only a real grid).
+export const tableHtml = (t) => `<div class="table-scroll" style="overflow-x:auto"><table><thead><tr>${t.columns.map((c) => `<th scope="col">${esc(c)}</th>`).join('')}</tr></thead><tbody>${t.rows.map((r) => `<tr>${r.map((c, i) => (i === 0 ? `<th scope="row">${esc(c)}</th>` : `<td>${esc(c)}</td>`)).join('')}</tr>`).join('')}</tbody></table></div>`;
+
 const TEMPLATE_HEADINGS = new Set(['Frequently asked questions', 'Related questions'].map(norm));
 
 export const EDITED_PAGE = 'the page was edited after its draft was saved, so a re-render would undo that edit; left as it is';
@@ -217,11 +220,11 @@ export function draftDrift(html, draft) {
   const m = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
   if (!m) return ['the page has no <article> to compare with its draft'];
   const art = m[1].replace(new RegExp(`${reEsc(RELATED_START)}[\\s\\S]*?${reEsc(RELATED_END)}`, 'g'), '');
-  const blocks = (h) => [...h.matchAll(/<(h1|h2|h3|p|li)\b[^>]*>([\s\S]*?)<\/\1>/gi)].map((x) => textOf(x[2])).filter(Boolean);
+  const blocks = (h) => [...h.matchAll(/<(h1|h2|h3|p|li|th|td)\b[^>]*>([\s\S]*?)<\/\1>/gi)].map((x) => textOf(x[2])).filter(Boolean);
   const sections = [...art.matchAll(/<section\b([^>]*)>([\s\S]*?)<\/section>/gi)].filter((x) => !/data-search-loop="(?:facts|related)"|search-loop-related/.test(x[1])).flatMap((x) => blocks(x[2]));
   const top = [...art.matchAll(/<h1\b[^>]*>([\s\S]*?)<\/h1>|<p class="direct-answer">([\s\S]*?)<\/p>/gi)].map((x) => textOf(x[1] ?? x[2]));
   const live = [...top, ...sections].filter((x) => !TEMPLATE_HEADINGS.has(x));
-  const own = [draft.h1, draft.direct_answer, ...(draft.sections || []).flatMap((s) => [s.heading, ...(s.paragraphs || []), ...(s.bullets || [])]), ...(draft.faq || []).flatMap((f) => [f.q, f.a])]
+  const own = [draft.h1, draft.direct_answer, ...(draft.sections || []).flatMap((s) => [s.heading, ...(s.paragraphs || []), ...(s.bullets || []), ...(s.table ? [...s.table.columns, ...s.table.rows.flat()] : [])]), ...(draft.faq || []).flatMap((f) => [f.q, f.a])]
     .map((x) => textOf(esc(x))).filter(Boolean);
   const ownSet = new Set(own); const liveSet = new Set(live);
   const cut = (x) => (x.length > 70 ? `${x.slice(0, 70)}...` : x);

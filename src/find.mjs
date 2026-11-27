@@ -104,14 +104,14 @@ export async function relevanceScreen(cfg, list, { chat, fetchImpl }) {
     progress('find', `free-model screen ${i + 1}-${i + batch.length} of ${list.length}`);
     const r = await chat({ cfg, fetchImpl, maxTokens: 800, messages: [
       { role: 'system', content: 'You screen search queries for one website. Return ONLY JSON.' },
-      { role: 'user', content: `Site: ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Topics: ${cfg.topics.join(', ')}.\nKeep a query only if a person in this audience would type it AND a page from this site would be a genuinely useful answer (not a different meaning of the words, not a brand, product or navigation search for someone else).\nThen, of the kept queries, list the ones where the person is choosing between options: comparing two or more named things, looking for an alternative to or replacement for something, asking which is better, or switching from one to another (not a query that only contains such a word, like a therapy or a part named "replacement").\nQueries:\n${batch.map((c, j) => `${j}. ${c.query}`).join('\n')}\nReturn {"keep":[numbers],"comparison":[numbers]}` },
+      { role: 'user', content: `Site: ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Topics: ${cfg.topics.join(', ')}.\nKeep a query only if a person in this audience would type it AND a page from this site would be a genuinely useful answer (not a different meaning of the words, not a brand, product or navigation search for someone else; a person comparing other products or looking for an alternative to one is this site's audience when the site offers such an option, so keep that search).\nSeparately, for EVERY query (kept or not), say whether it is a comparison: the person is choosing between options ("x vs y", "x or y", "alternatives to x", "x instead of y", "better than x", "switching from x"). A query that only contains such a word with another meaning (a therapy or a part called "replacement") is not a comparison.\nQueries:\n${batch.map((c, j) => `${j}. ${c.query}`).join('\n')}\nReturn {"keep":[numbers],"comparison":[numbers]}` },
     ] });
     if (!r.ok) return { notRead: r.reason };
     const j = parseJsonAnswer(r.answer);
     if (!Array.isArray(j?.keep)) return { notRead: 'the free model did not return {"keep":[...]}' };
     for (const n of j.keep) if (batch[n]) keep.add(batch[n]);
     if (!Array.isArray(j.comparison)) comparisonRead = false;
-    else for (const n of j.comparison) if (batch[n] && keep.has(batch[n])) comparison.add(batch[n]);
+    else for (const n of j.comparison) if (batch[n]) comparison.add(batch[n]);
   }
   return { keep, comparison, ...(comparisonRead ? {} : { comparisonNotRead: 'the free model did not return "comparison":[...]' }) };
 }
@@ -327,7 +327,9 @@ export async function find(cfg, { fetchImpl = fetch, now = new Date(), index, ch
     // asked of autocomplete: with no model to read it, it is not built this run.
     screened = targets.filter((t) => !t.signals.comparison_only);
   } else {
-    screened = pool.filter((t) => screen.keep.has(t) || t.signals.gsc_position);
+    // Measured rows stand without the keep vote, as before; a comparison-pull row is measured too
+    // (Search Console shows the site for it), so the model's comparison read is its vote (v1.16.0).
+    screened = pool.filter((t) => screen.keep.has(t) || t.signals.gsc_position || (t.signals.comparison_pull && screen.comparison?.has(t)));
     receipt.sources.relevance_screen = `ok: kept ${screened.length} of ${pool.length} (free model)`;
   }
   // 5. Optional top-10 read for the best can-be-#1 candidates (off without a key),

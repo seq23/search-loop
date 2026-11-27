@@ -93,6 +93,8 @@ export function siteClaimHits(cfg, text) {
 // lists and answers that names a rival repeats one of those facts. Headings may name a rival: the
 // comparison itself is the heading. Fails closed: a comparison draft with no "rivals" list is refused.
 const reEsc = (x) => String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// The rival's name as a whole word, any case ("Relate" in "Relate's plan", never in "unrelated").
+export const rivalPattern = (name) => new RegExp(`(^|[^\\p{L}\\p{N}])${reEsc(name)}($|[^\\p{L}\\p{N}])`, 'iu');
 export function rivalProblems(page, main, factsBlock, verifiedFacts) {
   if (!page.comparison) return [];
   if (!Array.isArray(page.rivals)) return ['rivals: a comparison page must list in "rivals" every other company, product or service it names ([] when it names none)'];
@@ -101,12 +103,23 @@ export function rivalProblems(page, main, factsBlock, verifiedFacts) {
     .filter((m) => !/class=["'](page-dates|site-action)["']/.test(m[2]))
     .flatMap((m) => stripTags(m[3]).split(/(?<=[.!?])\s+/)).filter(Boolean);
   const sourced = (s) => verifiedFacts.some((f) => s.includes(f.claim.slice(0, 40)));
+  // A table cell is a claim about a rival when the cell, its row's label or its column's header
+  // names the rival (a "BetterUp" row or column states what BetterUp is); the labels themselves
+  // are headings. So the table lays out how to choose, never one rival's features unsourced.
+  const tables = [...body.matchAll(/<table\b[\s\S]*?<\/table>/gi)].map((t) => {
+    const cells = (h) => [...h.matchAll(/<(th|td)\b[^>]*>([\s\S]*?)<\/\1>/gi)].map((c) => stripTags(c[2]).trim());
+    const head = cells((t[0].match(/<thead[\s\S]*?<\/thead>/i) || [''])[0]);
+    const rows = [...((t[0].match(/<tbody[\s\S]*?<\/tbody>/i) || [''])[0]).matchAll(/<tr\b[\s\S]*?<\/tr>/gi)].map((r) => cells(r[0]));
+    return { head, rows };
+  });
   const out = [];
   for (const rival of page.rivals) {
-    const re = new RegExp(`(^|[^\\p{L}\\p{N}])${reEsc(rival)}($|[^\\p{L}\\p{N}])`, 'iu');
+    const re = rivalPattern(rival);
     if (!verifiedFacts.some((f) => re.test(f.claim))) { out.push(`rivals: nothing the page says about "${rival}" is a verified fact; put it in "facts" with a source that states it, or leave ${rival} out`); continue; }
     const bad = sentences.find((x) => re.test(x) && !sourced(x));
     if (bad) out.push(`rivals: "${bad.slice(0, 100)}" says something about ${rival} with no source; repeat one of the sourced facts word for word, or drop the sentence`);
+    const cell = tables.flatMap(({ head, rows }) => rows.flatMap((r) => r.filter((c, i) => i > 0 && (re.test(c) || re.test(r[0]) || re.test(head[i] || '')) && !sourced(c)))).find(Boolean);
+    if (cell) out.push(`rivals: the table cell "${cell.slice(0, 80)}" states something about ${rival} with no source; the table lays out how to choose, never one rival's features`);
   }
   return out;
 }
@@ -196,11 +209,12 @@ export function gateReport(page, ctx) {
     // every automated check, so a credit page citing the FTC failed all three attempts
     // (approvalprep.com, 9-13 Nov 2026: 9 of 14 drops).
     const failed = (page.facts || []).filter((f) => f.verified === false && f.source_url).slice(0, 4)
-      .map((f) => `${f.source_url} (${[401, 403].includes(f.checked_status) ? `HTTP ${f.checked_status}: this site refuses automated checks, so cite a different publisher` : f.checked_status ? `HTTP ${f.checked_status}` : 'no answer'})`);
+      .map((f) => `${f.source_url} (${f.unnamed ? `the page never names ${f.unnamed}, so it is no source for a claim about it` : [401, 403].includes(f.checked_status) ? `HTTP ${f.checked_status}: this site refuses automated checks, so cite a different publisher` : f.checked_status ? `HTTP ${f.checked_status}` : 'no answer'})`);
     p.push(`facts: needs at least 2 distinct sources whose URLs answered 200 (found ${distinctSources.size})${failed.length ? `; these failed the check, replace each with a page that exists: ${failed.join('; ')}` : ''}`);
   }
   const bodySections = [...main.matchAll(/<section(?![^>]*data-search-loop=)(?![^>]*class=["']faq)[^>]*>([\s\S]*?)<\/section>/gi)].map((m) => m[1]).join(' ');
   if (!/<(ul|ol|table)\b/i.test(bodySections)) p.push('shape: the body needs at least one list or table (give one section "bullets")');
+  if (page.comparison && !/<table\b/i.test(bodySections)) notes.push('d2 a comparison page reads best with a table that lays out how to choose (give one section a "table")');
   // Only the sourced-facts block may carry numbers or named sources; and only
   // when each line in it is a verified fact.
   const factsBlock = (main.match(/<section[^>]+data-search-loop=["']facts["'][\s\S]*?<\/section>/i) || [''])[0];
