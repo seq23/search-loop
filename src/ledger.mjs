@@ -14,6 +14,7 @@ export const FILES = {
   serp_budget: 'serp-budget.json',
   lane_weights: 'lane-weights.json',
   ai_misses: 'ai-misses.json',
+  seeds: 'seeds.json',
   drafts: 'drafts',
   snapshots: 'snapshots',
 };
