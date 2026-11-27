@@ -678,12 +678,19 @@ test('a model cut short by the call deadline is not skipped for the run; a full 
     resetLanes(); startClock({});
     const r = await freeChat({ cfg, messages: msgs, apiKey: 'k', fetchImpl: hang, sleepImpl: async () => {}, timeoutMs: 100, callMs: 250 });
     assert.equal(r.stop, 'NO_FREE_MODEL');
-    const slow = Object.keys(laneState.slow);
-    const askedModels = asked.length;
-    assert.ok(askedModels >= 3, `the case must ask at least three models (${askedModels})`);
-    assert.equal(slow.length, askedModels - 1, `only the models that had the full 100 ms are slow: ${slow.join(', ')} of ${asked.join(', ')}`);
-    const cut = asked[asked.length - 1];
-    assert.ok(!slow.some((k) => k.endsWith(`:${cut}`)), `the model cut short (${cut}) is not skipped for the run`);
+    const slow = Object.keys(laneState.slow).sort();
+    // Read from the attempts, not from how many models a slow runner fits in 250 ms: main run
+    // 46055635057 gave the last two models a cut turn (2 full + 2 cut), and the old count
+    // (slow = asked - 1) failed on correct behaviour.
+    const key = (a) => `${a.lane}:${a.model}`;
+    const full = r.attempts.filter((a) => a.status === 'timeout');
+    const cut = r.attempts.filter((a) => a.status === 'cut short by the call budget');
+    assert.ok(asked.length >= 3, `the case must ask at least three models (${asked.length})`);
+    assert.equal(full.length + cut.length, asked.length, `every model asked either had its full turn or was cut short: ${JSON.stringify(r.attempts)}`);
+    assert.ok(full.length >= 1 && cut.length >= 1, `the case needs a full timeout and a cut-short turn: ${JSON.stringify(r.attempts)}`);
+    assert.deepEqual(slow, full.map(key).sort(), `only the models that had the full 100 ms are slow: ${slow.join(', ')} of ${asked.join(', ')}`);
+    for (const a of cut) assert.ok(!slow.includes(key(a)), `the model cut short (${a.model}) is not skipped for the run`);
+    assert.ok(r.attempts.findIndex((a) => a.status === 'cut short by the call budget') > r.attempts.findLastIndex((a) => a.status === 'timeout'), 'cut turns come only after the deadline is near');
     assert.match(r.reason + JSON.stringify(r.attempts), /cut short by the call budget/);
   } finally { delete process.env.GEMINI_API_KEY; startClock({}); resetLanes(); }
 });
