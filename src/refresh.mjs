@@ -138,8 +138,8 @@ export async function refreshPages(cfg, L, live, { today, now = new Date(), rule
     const before = fs.readFileSync(file, 'utf8');
     const relatedLinks = relatedLinksOf(before);
     const html = render(cfg, { slug: p.slug, draft: next, related: relatedLinks, published: p.published_at, modified: today });
-    const was = new Set(gate({ query: p.query, html: before, facts: draft.facts || [] }, { cfg, corpus: index, selfRoute: p.route }));
-    const problems = gate({ query: p.query, html, facts: next.facts || [] }, { cfg, corpus: index, selfRoute: p.route }).filter((x) => !was.has(x));
+    const was = new Set(gate({ query: p.query, html: before, facts: draft.facts || [], comparison: Boolean(p.comparison), rivals: draft.rivals }, { cfg, corpus: index, selfRoute: p.route }));
+    const problems = gate({ query: p.query, html, facts: next.facts || [], comparison: Boolean(p.comparison), rivals: next.rivals }, { cfg, corpus: index, selfRoute: p.route }).filter((x) => !was.has(x));
     if (problems.length) { p.refreshed = { at: today, changes: [], left: [...left, `the refreshed page failed the gate, left as it was: ${problems.slice(0, 2).join('; ')}`] }; continue; }
     const bh = sha256(before);
     fs.mkdirSync(path.dirname(L.snapshotPath(bh)), { recursive: true });

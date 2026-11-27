@@ -86,6 +86,31 @@ export function siteClaimHits(cfg, text) {
   return out;
 }
 
+// v1.16.0: a comparison page ("x vs y", "alternatives to x") talks about other companies, and every
+// claim about another company needs a source the page cites (risk brain; R-ADV-13). The model lists
+// the companies and products it names in "rivals" (it reads the meaning); this only checks the
+// structure: each rival is named in a verified fact, and every sentence in the page's paragraphs,
+// lists and answers that names a rival repeats one of those facts. Headings may name a rival: the
+// comparison itself is the heading. Fails closed: a comparison draft with no "rivals" list is refused.
+const reEsc = (x) => String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export function rivalProblems(page, main, factsBlock, verifiedFacts) {
+  if (!page.comparison) return [];
+  if (!Array.isArray(page.rivals)) return ['rivals: a comparison page must list in "rivals" every other company, product or service it names ([] when it names none)'];
+  const body = main.replace(factsBlock, ' ').replace(/<section[^>]+data-search-loop=["']related["'][\s\S]*?<\/section>/gi, ' ').replace(/<section class="search-loop-related">[\s\S]*?<\/section>/gi, ' ');
+  const sentences = [...body.matchAll(/<(p|li)\b([^>]*)>([\s\S]*?)<\/\1>/gi)]
+    .filter((m) => !/class=["'](page-dates|site-action)["']/.test(m[2]))
+    .flatMap((m) => stripTags(m[3]).split(/(?<=[.!?])\s+/)).filter(Boolean);
+  const sourced = (s) => verifiedFacts.some((f) => s.includes(f.claim.slice(0, 40)));
+  const out = [];
+  for (const rival of page.rivals) {
+    const re = new RegExp(`(^|[^\\p{L}\\p{N}])${reEsc(rival)}($|[^\\p{L}\\p{N}])`, 'iu');
+    if (!verifiedFacts.some((f) => re.test(f.claim))) { out.push(`rivals: nothing the page says about "${rival}" is a verified fact; put it in "facts" with a source that states it, or leave ${rival} out`); continue; }
+    const bad = sentences.find((x) => re.test(x) && !sourced(x));
+    if (bad) out.push(`rivals: "${bad.slice(0, 100)}" says something about ${rival} with no source; repeat one of the sourced facts word for word, or drop the sentence`);
+  }
+  return out;
+}
+
 export function gate(page, ctx) {
   return gateReport(page, ctx).problems;
 }
@@ -200,6 +225,7 @@ export function gateReport(page, ctx) {
   if (REVIEW.test(prose)) p.push(`invented: review or testimonial language "${(prose.match(REVIEW) || [])[0]}"`);
   if (CREDENTIAL.test(prose)) p.push(`invented: credential or expert claim "${(prose.match(CREDENTIAL) || [])[0]}"`);
   if (PERSON_QUOTE.test(prose)) p.push(`invented: a named person or quote "${(prose.match(PERSON_QUOTE) || [])[0].slice(0, 60)}"`);
+  p.push(...rivalProblems(page, main, factsBlock, verifiedFacts));
   if (PLACEHOLDER.test(text)) p.push(`unfinished: placeholder or leaked model text "${(text.match(PLACEHOLDER) || [])[0]}"`);
   // The site's own claim guard on the title, meta and body, so a page the site's own build would refuse
   // is never committed (9 Nov 2026: keepmyproof.com got three pages with "proves" / "best" that its

@@ -53,4 +53,11 @@ export async function inspectUrl(siteUrl, url, { fetchImpl = fetch } = {}) {
   return { ok: true, verdict: st.verdict || null, coverage: st.coverageState || null, indexed: st.verdict === 'PASS' };
 }
 
-export const dateDaysAgo = (n, now = new Date()) => new Date(now - n * 86400000).toISOString().slice(0, 10);
+// Comparison searches (v1.16.0): people choosing between options ("x vs y", "alternatives to x",
+// "x instead of y", "better than", "switch from"). Search Console applies this (RE2) to the query
+// in one extra FIND pull; it only decides which rows to ask for. Whether a row really is a
+// comparison ("testosterone replacement therapy" matches too) is read by FIND's free-model screen.
+export const COMPARISON_REGEX = String.raw`\b(vs|versus|compare|compared|comparing|comparisons?|alternatives?|competitors?|instead of|replacements?|better than|difference between|switch from|switching from)\b`;
+export const comparisonFilter = () => [{ filters: [{ dimension: 'query', operator: 'includingRegex', expression: COMPARISON_REGEX }] }];
+
+export const dateDaysAgo =(n, now = new Date()) => new Date(now - n * 86400000).toISOString().slice(0, 10);

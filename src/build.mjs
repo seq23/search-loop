@@ -68,11 +68,15 @@ export function draftPrompt(cfg, target, related, problems) {
   const places = cfg.local ? [cfg.local.city, ...(cfg.local.neighbourhoods || [])].filter(Boolean) : [];
   const place = places.find((pl) => String(target.query).toLowerCase().includes(String(pl).toLowerCase()));
   const local = place && cfg.local?.substance ? `\nThis is a local page for ${place}. ${cfg.local.substance}` : '';
+  // v1.16.0: a comparison search names other companies' products. Every claim about one is a sourced
+  // fact (risk brain: claims about another company need a source), and the gate checks it by the
+  // names the model lists in "rivals".
+  const versus = target.comparison ? `\nThis search compares options. Name every company, product or service the search or the page names exactly as that company spells it, and list each one in "rivals" (never ${cfg.site_name} itself; [] when the options are not companies or products, such as two methods). Anything you say about a rival (what it does, offers, costs, lacks or its terms) goes in "facts" with the URL of the rival's own page or an independent publication that states it; in the rest of the page a rival's name appears only in headings or in a sentence that repeats one of those facts word for word. Never call a rival bad, a scam or worse, never imply ${cfg.site_name} is affiliated with or endorsed by one, and say plainly who each option fits. If you cannot source what the page would need to say about a rival, return {"skip":"no source for the rival's claims"}.` : '';
   return [
     { role: 'system', content: `You write one web page that answers one search for ${cfg.site_name} (${cfg.base_url}). Audience: ${cfg.audience}. Voice (how to write; never copy these sentences into the page): ${cfg.voice}. You return ONLY a JSON object, no prose around it.` },
     { role: 'user', content: `Search to answer: "${target.query}"
 Existing pages on the site you may mention by name (do not invent others): ${related.map((r) => pageName(cfg, r)).join(' | ') || 'none'}
-The page ends by inviting the reader to: ${cfg.action.label}.${facts}${local}
+The page ends by inviting the reader to: ${cfg.action.label}.${facts}${local}${versus}
 
 Return JSON with exactly these keys:
 {
@@ -83,7 +87,7 @@ Return JSON with exactly these keys:
  "sections": [ {"heading": "a question people ask about this", "paragraphs": ["120-180 words", "..."], "bullets": ["optional: 3-6 short list items"]} ],  // 4-5 sections, 650+ words in total; at least one section has "bullets"
  "faq": [ {"q": "a related question", "a": "${LIMITS.faqAnswer[0]}-${LIMITS.faqAnswer[1]} words"} ],  // exactly 4
  "facts_heading": "a short heading for the facts below, in the page's voice, that says what they help the reader do (for example 'Before you plan the food table'); never 'What the sources say', 'Sources' or 'Facts'",
- "facts": [ {"claim": "one checkable fact, in one plain sentence, that this reader can act on for this search (a safety rule, a timing, a local rule or condition that changes their plan); never trivia such as which county a town is in or how big it is", "source_url": "https URL of the exact public page that states it (government, university, major publication)", "source_name": "publisher name"} ]  // 2-4, from at least 2 different sources
+ "facts": [ {"claim": "one checkable fact, in one plain sentence, that this reader can act on for this search (a safety rule, a timing, a local rule or condition that changes their plan); never trivia such as which county a town is in or how big it is", "source_url": "https URL of the exact public page that states it (government, university, major publication)", "source_name": "publisher name"} ]  // 2-4, from at least 2 different sources${target.comparison ? ',\n "rivals": ["each other company, product or service the page names"]' : ''}
 }
 If this search does not fit the audience or the site (a different meaning of the words, someone else's brand), return {"skip":"why"} instead.
 Hard rules: no statistics, percentages or "studies show" anywhere except inside "facts"; no prices, fees or money amounts (in digits or words, e.g. "$49" or "forty-nine dollars") anywhere except inside "facts" with a source that states them; no named people, quotes, doctors, credentials, reviews, testimonials or star ratings; no sentence or phrase repeated anywhere on the page (say each thing once, in words only this page would use); no promises of outcomes${cfg.health_gate !== 'none' ? '; no treatment or outcome claims, never "painless", no medical advice, no hours or services beyond the real facts' : ''}; no filler; second person, short sentences.${problems ? `\n\nYour previous draft failed these checks; fix every one:\n- ${problems.join('\n- ')}` : ''}` },
@@ -102,6 +106,7 @@ export function cleanDraft(d) {
     faq: (Array.isArray(d.faq) ? d.faq : []).map((f) => ({ q: str(f?.q), a: str(f?.a) })).filter((f) => f.q && f.a).slice(0, 6),
     facts_heading: str(d.facts_heading),
     facts: (Array.isArray(d.facts) ? d.facts : []).map((f) => ({ claim: str(f?.claim), source_url: str(f?.source_url), source_name: str(f?.source_name) })).filter((f) => f.claim && /^https:\/\//.test(f.source_url)).slice(0, 4),
+    ...(Array.isArray(d.rivals) ? { rivals: [...new Set(d.rivals.map(str).filter(Boolean))].slice(0, 8) } : {}),
   };
   if (!(out.h1 && out.direct_answer && out.sections.length && out.faq.length)) return null;
   return defineLead(capRepeats(out));
@@ -297,10 +302,12 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
   // Priority searches (find.priority_topics, v1.11.0) are taken before any other, in either lane.
   // v1.14.0: AI answer misses with no page that fits are taken first of all.
   const aiMiss = (t) => t.ai_miss_ids?.length > 0;
+  // v1.16.0: comparison searches the free-model screen confirmed come next, before priority topics.
   const lanesAi = laneQueue(queue.filter(aiMiss), laneRatio(cfg), laneMade);
-  const lanesFirst = laneQueue(queue.filter((t) => !aiMiss(t) && t.priority), laneRatio(cfg), laneMade);
-  const lanesRest = laneQueue(queue.filter((t) => !aiMiss(t) && !t.priority), laneRatio(cfg), laneMade);
-  const lanes = { next: () => lanesAi.next() || lanesFirst.next() || lanesRest.next() };
+  const lanesCmp = laneQueue(queue.filter((t) => !aiMiss(t) && t.comparison), laneRatio(cfg), laneMade);
+  const lanesFirst = laneQueue(queue.filter((t) => !aiMiss(t) && !t.comparison && t.priority), laneRatio(cfg), laneMade);
+  const lanesRest = laneQueue(queue.filter((t) => !aiMiss(t) && !t.comparison && !t.priority), laneRatio(cfg), laneMade);
+  const lanes = { next: () => lanesAi.next() || lanesCmp.next() || lanesFirst.next() || lanesRest.next() };
   for (let target = lanes.next(); target; target = lanes.next()) {
     if (made() >= room) { heldStop = true; break; }
     if (made() >= result.quota || result.attempted >= result.quota * 2 + 2 || considered >= result.quota * 6 + 10) break;
@@ -346,7 +353,7 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
       // Distinct intent gate, after drafting: the H1 the model chose, and the answer it gave.
       const post = matchIntent(cfg, draft.h1, corpus) || matchAnswer(cfg, draft.direct_answer, answers);
       if (post) { draft = null; html = null; problems = null; target.__redirect = post; break; }
-      ({ problems, notes: gateNotes } = gateReport({ query: target.query, html, facts: draft.facts }, { cfg, corpus: index, siblings, selfRoute: route }));
+      ({ problems, notes: gateNotes } = gateReport({ query: target.query, html, facts: draft.facts, comparison: Boolean(target.comparison), rivals: draft.rivals }, { cfg, corpus: index, siblings, selfRoute: route }));
       // A missing heading is asked for again, but on the last try it is a note: the page still
       // shows its facts, below the FAQ under "Sources" (render.mjs), so it ships rather than drops.
       if (!draft.facts_heading && draft.facts.some((f) => f.verified)) (attempt < MAX_ATTEMPTS - 1 ? problems : gateNotes).push('facts: needs a facts_heading that says, in the page\'s voice, what the facts help the reader do');
@@ -393,11 +400,11 @@ export async function build(cfg, { mode, rules, now = new Date(), fetchImpl = fe
     }
     result.related_links += linkedFrom.length;
     if (appr) {
-      book.pages.push({ slug, query: target.query, lane: target.lane || 'striking', ...(target.priority ? { priority: target.priority } : {}), score: target.score, scores: target.scores, reasons: target.reasons || [], signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: null, queued_at: today, status: 'pending_approval', pending_rel: path.posix.join(appr.pending_dir, rel), hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: [], checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
+      book.pages.push({ slug, query: target.query, lane: target.lane || 'striking', ...(target.priority ? { priority: target.priority } : {}), ...(target.comparison ? { comparison: true } : {}), score: target.score, scores: target.scores, reasons: target.reasons || [], signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: null, queued_at: today, status: 'pending_approval', pending_rel: path.posix.join(appr.pending_dir, rel), hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: [], checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
       result.queued++; laneMade[target.lane || 'striking']++;
       continue;
     }
-    book.pages.push({ slug, query: target.query, lane: target.lane || 'striking', ...(target.priority ? { priority: target.priority } : {}), score: target.score, scores: target.scores, reasons: target.reasons || [], signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: today, status: 'live', hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: linkedFrom, checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
+    book.pages.push({ slug, query: target.query, lane: target.lane || 'striking', ...(target.priority ? { priority: target.priority } : {}), ...(target.comparison ? { comparison: true } : {}), score: target.score, scores: target.scores, reasons: target.reasons || [], signals: target.signals, rel, route, url: pageUrl(cfg, slug), published_at: today, status: 'live', hash: sha256(html), model: 'free-route', facts: draft.facts.filter((f) => f.verified).map((f) => f.source_url), linked_from: linkedFrom, checks: {}, ...(gateNotes.length ? { gate_notes: gateNotes } : {}) });
     result.published++; laneMade[target.lane || 'striking']++;
     if (gateNotes.length) result.noted = (result.noted || 0) + 1;
   }

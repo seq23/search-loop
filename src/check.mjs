@@ -252,7 +252,7 @@ export function reshape(cfg, L, p, { today, index = [], notes = [] }) {
   if (!Object.keys(gaps).length) return false;
   const left = (why) => { p.reshaped = { v: RESHAPE_VERSION, at: today, fixed: [], left: why }; notes.push(`reshape of ${p.route} left as it was: ${why.slice(0, 2).join('; ')}`); return false; };
   const saved = fs.existsSync(draftFile) ? JSON.parse(fs.readFileSync(draftFile, 'utf8')) : null;
-  const gateOf = (h, facts) => gate({ query: p.query, html: h, facts }, { cfg, corpus: index, selfRoute: p.route });
+  const gateOf = (h, facts) => gate({ query: p.query, html: h, facts, comparison: Boolean(p.comparison), rivals: saved?.rivals }, { cfg, corpus: index, selfRoute: p.route });
   let html; let next; let problems;
   if (Object.keys(gaps).join() === 'lead') {
     // v1.9.2: only the lead defines nothing. The live page may have been edited after its draft was
@@ -338,7 +338,7 @@ async function strengthen(cfg, L, p, snap, { today, chat, fetchImpl, index, note
   const before = fs.readFileSync(file, 'utf8');
   const relatedLinks = relatedLinksOf(before);
   const html = render(cfg, { slug: p.slug, draft: next, related: relatedLinks, published: p.published_at, modified: today });
-  const problems = gate({ query: p.query, html, facts: next.facts }, { cfg, corpus: index, selfRoute: p.route });
+  const problems = gate({ query: p.query, html, facts: next.facts, comparison: Boolean(p.comparison), rivals: next.rivals }, { cfg, corpus: index, selfRoute: p.route });
   if (problems.length) { notes.push(`strengthen of ${p.route} failed the gate, left as it was: ${problems.slice(0, 2).join('; ')}`); return { ok: false, why: 'gate', reason: `failed the gate, left as it was: ${problems.slice(0, 2).join('; ')}` }; }
   const bh = sha256(before);
   fs.mkdirSync(path.dirname(L.snapshotPath(bh)), { recursive: true });
