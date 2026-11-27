@@ -219,6 +219,7 @@ test('the draft prompt for a comparison asks for rivals, sources and skip; a nor
   assert.match(p, /"rivals": \[/);
   assert.match(p, /an unsourced sentence about a rival stops it from being published/);
   assert.match(p, /Something about a rival you cannot source is left out/);
+  assert.match(p, /the direct answer defines the choice in your own words without naming a rival/);
   assert.match(p, /never imply Example Planner is affiliated with or endorsed by one/);
   const n = draftPrompt(cfg, { query: 'how to plan my week' }, [], null)[1].content;
   assert.doesNotMatch(n, /compares options|"rivals"/);
