@@ -21,7 +21,7 @@
 // not one more near-twin.
 import fs from 'node:fs';
 import path from 'node:path';
-import { contentWords, shingles, jaccard } from './util.mjs';
+import { contentWords, shingles, jaccard, NamedStop, EXIT } from './util.mjs';
 import { INTENT_VERBS, stem } from './find.mjs';
 
 import { DISTINCT_DEFAULTS } from './defaults.mjs';
@@ -53,14 +53,28 @@ const routeOfUrl = (cfg, u) => { try { const x = new URL(u, cfg.base_url); retur
 const slugWords = (route) => decodeURIComponent(String(route).replace(/\.html?$/, '').split('/').filter(Boolean).pop() || '').replace(/[-_]+/g, ' ');
 
 // Local sitemap files: distinct.sitemap_files, or every sitemap*.xml at the repo root.
+// v1.17.3 (Rule 0): a file the site names in distinct.sitemap_files must be there and hold at
+// least one <loc> URL. Before, a named file that was missing (a build that had not written it,
+// a moved path) was skipped in silence and the gate passed having compared against none of the
+// site's sitemap pages, so the loop could publish a twin of a page only the sitemap knew about
+// (found reviewing seq23/WKYS#3). Missing, unreadable or empty is now a NAMED STOP before
+// anything is drafted. The default (no key: whatever sitemap*.xml is at the root, possibly
+// none) is unchanged.
 export function sitemapRoutes(cfg) {
   const root = cfg.root;
   let files = cfg.distinct?.sitemap_files;
-  if (!Array.isArray(files)) { try { files = fs.readdirSync(root).filter((f) => /^sitemap.*\.xml$/i.test(f)); } catch { files = []; } }
+  const named = Array.isArray(files);
+  if (!named) { try { files = fs.readdirSync(root).filter((f) => /^sitemap.*\.xml$/i.test(f)); } catch { files = []; } }
   const out = new Set();
   for (const f of files) {
-    let xml; try { xml = fs.readFileSync(path.join(root, f), 'utf8'); } catch { continue; }
-    for (const m of xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)) { if (/\.xml$/i.test(m[1])) continue; const r = routeOfUrl(cfg, m[1]); if (r) out.add(r); }
+    let xml;
+    try { xml = fs.readFileSync(path.join(root, f), 'utf8'); } catch (e) {
+      if (named) throw new NamedStop('SITEMAP_MISSING', `${f} is named in distinct.sitemap_files but could not be read (${e.code || e.message}) under ${root}; nothing was drafted or published, because the distinct-intent gate would have compared new searches against none of the site's sitemap pages. Make the site's setup_command write ${f} before the engine runs, or fix the path in search-loop.config.json.`, EXIT.PROBLEMS);
+      continue;
+    }
+    const locs = [...xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((m) => m[1]);
+    if (named && !locs.length) throw new NamedStop('SITEMAP_EMPTY', `${f} is named in distinct.sitemap_files but holds 0 <loc> URLs; nothing was drafted or published, because the distinct-intent gate would have compared new searches against none of the site's sitemap pages. Check the step that writes ${f} (setup_command), or fix the path in search-loop.config.json.`, EXIT.PROBLEMS);
+    for (const loc of locs) { if (/\.xml$/i.test(loc)) continue; const r = routeOfUrl(cfg, loc); if (r) out.add(r); }
   }
   return [...out];
 }
